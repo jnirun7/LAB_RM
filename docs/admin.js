@@ -114,7 +114,7 @@
       var d = await R.api('listRisks', { unit_id: RK.unit_id });
       RK.list = d.risks;
       $app.innerHTML = '<h1>Risk Register</h1><div class="filters"><div><label class="f">หน่วยงาน</label><select id="rkUnit"><option value="">ทั้งหมด</option>' +
-        S.conf.units.map(function (u) { return '<option value="' + esc(u.id) + '"' + (RK.unit_id === u.id ? ' selected' : '') + '>' + esc(u.name) + '</option>'; }).join('') + '</select></div>' +
+        R.unitOptions(S.conf.units, RK.unit_id) + '</select></div>' +
         '<div style="align-self:end;display:flex;gap:8px"><button class="btn small secondary" data-act="rk-filter">กรอง</button><button class="btn small" data-act="rk-new">+ เพิ่มความเสี่ยง</button></div></div>' +
         '<div style="overflow:auto"><table class="t"><thead><tr><th>รหัส</th><th>ความเสี่ยง</th><th>หน่วย</th><th>คะแนน</th><th>ผู้รับผิดชอบ</th><th>ทบทวนล่าสุด</th><th>ครบรอบ</th></tr></thead><tbody>' +
         (d.risks.length ? d.risks.map(function (r) {
@@ -133,7 +133,7 @@
   function riskForm(r) {
     r = r || { likelihood: 3, consequence: 3 };
     var h = '<div class="modal-bg"><div class="modal"><div class="row spread"><h2 style="margin:0">' + (r.id ? esc(r.id) : 'เพิ่มความเสี่ยง') + '</h2><button class="btn small secondary" data-act="close">ปิด</button></div>' +
-      '<label class="f">หน่วยงาน</label><select id="rk_unit">' + S.conf.units.map(function (u) { return '<option value="' + esc(u.id) + '"' + (r.unit_id === u.id ? ' selected' : '') + '>' + esc(u.name) + '</option>'; }).join('') + '</select>' +
+      '<label class="f">หน่วยงาน</label><select id="rk_unit">' + R.unitOptions(S.conf.units, r.unit_id) + '</select>' +
       '<label class="f">ชื่อความเสี่ยง</label><input type="text" id="rk_title" value="' + esc(r.title || '') + '">' +
       txt('rk_def', 'คำอธิบาย/นิยาม', r.definition) +
       '<div class="grid2">' + numSel('rk_L', r.likelihood, 'โอกาสเกิด') + numSel('rk_C', r.consequence, 'ความรุนแรง') + '</div>' +
@@ -183,27 +183,30 @@
   function gv(id) { var e = document.getElementById(id); return e ? e.value.trim() : ''; }
   function gc(id) { var e = document.getElementById(id); return !!(e && e.checked); }
 
+  function grpSel(id, val) {
+    return '<select id="' + id + '">' + R.UNIT_GROUPS.map(function (g) { return '<option' + (g === val ? ' selected' : '') + '>' + esc(g) + '</option>'; }).join('') + '</select>';
+  }
   function stUnits() {
     var row = function (u, i) {
-      return '<tr><td>' + esc(u.id) + '</td><td><input type="text" id="un_n' + i + '" value="' + esc(u.name) + '"></td>' +
+      return '<tr><td>' + esc(u.id) + '</td><td><input type="text" id="un_n' + i + '" value="' + esc(u.name) + '"></td><td>' + grpSel('un_g' + i, u.group) + '</td>' +
         '<td><input type="number" id="un_s' + i + '" value="' + u.sort + '" style="width:70px"></td>' +
         '<td><label><input type="checkbox" id="un_a' + i + '"' + (u.active ? ' checked' : '') + '> ใช้งาน</label></td>' +
         '<td><button class="btn small" data-act="un-save" data-arg="' + i + '">บันทึก</button></td></tr>';
     };
-    return '<div class="notice">การปิดใช้งานหน่วยจะไม่ลบรายงานเดิม แต่จะไม่ให้เลือกเมื่อรายงานใหม่</div><div style="overflow:auto"><table class="t"><thead><tr><th>รหัส</th><th>ชื่อ</th><th>ลำดับ</th><th></th><th></th></tr></thead><tbody>' +
+    return '<div class="notice">การปิดใช้งานหน่วยจะไม่ลบรายงานเดิม แต่จะไม่ให้เลือกเมื่อรายงานใหม่</div><div style="overflow:auto"><table class="t"><thead><tr><th>รหัส</th><th>ชื่อ</th><th>กลุ่ม</th><th>ลำดับ</th><th></th><th></th></tr></thead><tbody>' +
       ST.data.units.map(row).join('') +
-      '<tr><td><input type="text" id="un_new_id" placeholder="รหัส (ไม่ใส่ก็ได้)" style="width:120px"></td><td><input type="text" id="un_new_n" placeholder="ชื่อหน่วยใหม่"></td><td></td><td></td><td><button class="btn small" data-act="un-add">+ เพิ่ม</button></td></tr></tbody></table></div>';
+      '<tr><td><input type="text" id="un_new_id" placeholder="รหัส (ไม่ใส่ก็ได้)" style="width:120px"></td><td><input type="text" id="un_new_n" placeholder="ชื่อหน่วยใหม่"></td><td>' + grpSel('un_new_g', 'Lab') + '</td><td></td><td></td><td><button class="btn small" data-act="un-add">+ เพิ่ม</button></td></tr></tbody></table></div>';
   }
   H['un-save'] = function (i, el) {
     var u = ST.data.units[Number(i)];
     guard(el, async function () {
-      await R.api('saveUnit', { id: u.id, name: gv('un_n' + i), sort: gv('un_s' + i), active: gc('un_a' + i) });
+      await R.api('saveUnit', { id: u.id, name: gv('un_n' + i), group: gv('un_g' + i), sort: gv('un_s' + i), active: gc('un_a' + i) });
       R.toast('บันทึกแล้ว'); reloadSetup();
     });
   };
   H['un-add'] = function (_, el) {
     guard(el, async function () {
-      await R.api('saveUnit', { id: gv('un_new_id'), name: gv('un_new_n'), active: true, sort: ST.data.units.length + 1 });
+      await R.api('saveUnit', { id: gv('un_new_id'), name: gv('un_new_n'), group: gv('un_new_g'), active: true, sort: ST.data.units.length + 1 });
       R.toast('เพิ่มแล้ว'); reloadSetup();
     });
   };
@@ -267,7 +270,7 @@
 
   var CFG_LABEL = { hospital_id: 'รหัส รพ. (ใช้ในเลขที่รายงาน)', hospital_name: 'ชื่อ รพ.', office_start: 'เริ่มเวลาราชการ (HH:MM)', office_end: 'สิ้นสุดเวลาราชการ',
     shift_morning_start: 'เริ่มเวรเช้า', shift_afternoon_start: 'เริ่มเวรบ่าย', shift_night_start: 'เริ่มเวรดึก',
-    kpi_near_miss: 'เป้า Near miss (%)', kpi_units_report: 'เป้าหน่วยที่รายงาน (%)', kpi_units_register: 'เป้าหน่วยที่มี Risk Register (%)', kpi_rca: 'เป้าทำ RCA (%)', kpi_repeat: 'เพดานเหตุรุนแรงซ้ำ (%)' };
+    kpi_near_miss: 'เป้า Near miss (%)', kpi_units_report: 'เป้าหน่วยที่รายงาน (%)', kpi_units_register: 'เป้าหน่วยที่มี Risk Register (%)', kpi_rca: 'เป้าทำ RCA (%)', kpi_repeat: 'เพดานเหตุรุนแรงซ้ำ (%)', kpi_unit_group: 'กลุ่มหน่วยที่ใช้คำนวณตัวชี้วัดข้อ 3-4 (เว้นว่าง = ทุกกลุ่ม)' };
   function stConfig() {
     return '<div class="notice">เปลี่ยนรหัส รพ. จะมีผลกับเลขที่รายงานใหม่เท่านั้น</div><div style="overflow:auto"><table class="t"><tbody>' + ST.data.config.map(function (c, i) {
       return '<tr><td>' + esc(CFG_LABEL[c.key] || c.key) + '<br><span class="muted">' + esc(c.key) + '</span></td><td><input type="text" id="cf_' + i + '" value="' + esc(c.value) + '"></td>' +
@@ -296,7 +299,7 @@
       '<div><label class="f">ตั้งแต่</label><input type="date" id="fFrom" value="' + esc(F.from) + '"></div>' +
       '<div><label class="f">ถึง</label><input type="date" id="fTo" value="' + esc(F.to) + '"></div>' +
       '<div><label class="f">หน่วยงาน</label><select id="fUnit"><option value="">ทั้งหมด</option>' +
-      S.conf.units.map(function (u) { return '<option value="' + esc(u.id) + '"' + (F.unit_id === u.id ? ' selected' : '') + '>' + esc(u.name) + '</option>'; }).join('') + '</select></div>' +
+      R.unitOptions(S.conf.units, F.unit_id) + '</select></div>' +
       '<div><label class="f">สถานะ</label><select id="fStatus"><option value="">ทั้งหมด</option>' +
       STATUSES.map(function (s) { return '<option' + (F.status === s ? ' selected' : '') + '>' + esc(s) + '</option>'; }).join('') + '</select></div>' +
       '<div><label class="f">ความรุนแรง</label><select id="fGroup"><option value="">ทั้งหมด</option>' +
@@ -410,9 +413,13 @@
     var roleSel = '<select id="r_' + esc(u.id) + '">' + ['staff', 'head', 'committee', 'admin'].map(function (r) {
       return '<option value="' + r + '"' + (u.role === r ? ' selected' : '') + '>' + ROLE_TEXT[r] + '</option>';
     }).join('') + '</select>';
-    var unitBoxes = units.map(function (x) {
-      return '<label style="display:inline-block;margin-right:8px;white-space:nowrap"><input type="checkbox" class="u_' + esc(u.id) + '" value="' + esc(x.id) + '"' +
-        (u.unit_ids.indexOf(x.id) >= 0 ? ' checked' : '') + '> ' + esc(x.name) + '</label>';
+    var unitBoxes = R.UNIT_GROUPS.map(function (g) {
+      var inG = units.filter(function (x) { return (x.group || 'Lab') === g; });
+      if (!inG.length) return '';
+      return '<details' + (inG.some(function (x) { return u.unit_ids.indexOf(x.id) >= 0; }) || g === 'Lab' ? ' open' : '') + '><summary class="muted">' + esc(g) + '</summary>' + inG.map(function (x) {
+        return '<label style="display:inline-block;margin-right:8px;white-space:nowrap"><input type="checkbox" class="u_' + esc(u.id) + '" value="' + esc(x.id) + '"' +
+          (u.unit_ids.indexOf(x.id) >= 0 ? ' checked' : '') + '> ' + esc(x.name) + '</label>';
+      }).join('') + '</details>';
     }).join('');
     var actions = u.status === 'pending' ?
       '<button class="btn small" data-act="user-approve" data-arg="' + esc(u.id) + '">อนุมัติ</button> <button class="btn small danger" data-act="user-reject" data-arg="' + esc(u.id) + '">ปฏิเสธ</button>' :

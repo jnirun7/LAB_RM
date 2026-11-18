@@ -8,6 +8,7 @@
   var W = null;   // สถานะฟอร์มรายงาน
   var D = null;   // สถานะแผงตัดสินของหัวหน้า
   var REG = null; // สถานะฟอร์มลงทะเบียน
+  var RK = null;  // สถานะฟอร์ม Risk Register
   var H = {};     // ตัวจัดการปุ่ม (data-act)
 
   var CARD_ICON = {
@@ -62,7 +63,7 @@
     var m = e.target.dataset && e.target.dataset.model;
     if (!m) return;
     var parts = m.split('.');
-    var o = parts[0] === 'W' ? W : parts[0] === 'D' ? D : REG;
+    var o = parts[0] === 'W' ? W : parts[0] === 'D' ? D : parts[0] === 'RK' ? RK : REG;
     for (var i = 1; i < parts.length - 1; i++) o = o[parts[i]];
     o[parts[parts.length - 1]] = e.target.value;
     if (m === 'W.q') { document.getElementById('s1body').innerHTML = s1Body(); }
@@ -112,12 +113,12 @@
       '<label class="f">ชื่อ-สกุล</label><input type="text" data-model="REG.name" value="' + esc(REG.name) + '" placeholder="เช่น สมชาย ใจดี">' +
       '<label class="f">ตำแหน่ง</label><div class="chips">' +
       POSITIONS.map(function (p) { return chip(p, REG.position === p, 'reg-pos', p); }).join('') + '</div>' +
-      '<label class="f">หน่วยงาน (เลือกได้หลายหน่วย)</label><div class="chips">' +
-      units.map(function (u) { return chip(u.name, REG.unit_ids.indexOf(u.id) >= 0, 'reg-unit', u.id); }).join('') + '</div>',
+      '<label class="f">หน่วยงาน (เลือกได้หลายหน่วย)</label>' +
+      R.unitPicker('reg', { units: function () { return units; }, multi: true, selected: function () { return REG.unit_ids; }, toggle: function (id) { toggleIn(REG.unit_ids, id); } }),
       '<button class="btn" data-act="reg-submit">ส่งคำขอลงทะเบียน</button>');
   }
   H['reg-pos'] = function (p) { REG.position = REG.position === p ? '' : p; viewRegister(); };
-  H['reg-unit'] = function (id, el) { toggleIn(REG.unit_ids, id); el.classList.toggle('on'); };
+  R.bindPickers(H);
   H['reg-submit'] = function (_, el) {
     guard(el, async function () {
       if (REG.name.trim().length < 2) throw new Error('กรุณากรอกชื่อ-สกุล');
@@ -136,7 +137,8 @@
   async function viewHome() {
     render(loading());
     var u = S.me.user, canQueue = ['head', 'committee', 'admin'].indexOf(u.role) >= 0, qn = 0;
-    if (canQueue) { try { qn = (await R.api('queue', {})).total; } catch (e) { /* ignore */ } }
+    var od = 0;
+    if (canQueue) { try { var t = await R.api('todo', {}); qn = t.pending.length + t.close.length; od = t.fixing.filter(function (x) { return x.overdue; }).length; } catch (e) { /* ignore */ } }
     S.back = null;
     render('<h1>สวัสดี ' + esc(u.name) + '</h1><div class="muted">' + esc(ROLE_TEXT[u.role] || '') + ' · ' +
       esc(u.unit_ids.map(unitName).join(', ')) + '</div>' + friendBanner() +
@@ -145,8 +147,9 @@
       '<button class="btn big secondary" data-act="start-quick"><span class="ico">⚡</span><span>Near miss ด่วน<small>เกือบพลาด ส่งได้ในไม่กี่แตะ</small></span></button>' +
       '<button class="btn big secondary" data-act="mine"><span class="ico">📂</span><span>เรื่องของฉัน<small>ดูความคืบหน้าเรื่องที่รายงาน</small></span></button>' +
       '<button class="btn big secondary" data-act="stats"><span class="ico">📊</span><span>สถิติ<small>ภาพรวมของห้องปฏิบัติการ</small></span></button>' +
-      (canQueue ? '<button class="btn big warn" data-act="queue"><span class="ico">✅</span><span>คิวรอยืนยัน' +
-        (qn ? '<span class="badge-n">' + qn + '</span>' : '') + '<small>ตรวจและยืนยันรายงานของหน่วย</small></span></button>' : '') +
+      (canQueue ? '<button class="btn big warn" data-act="queue"><span class="ico">✅</span><span>งานของฉัน' +
+        (qn ? '<span class="badge-n">' + qn + '</span>' : '') + (od ? '<span class="badge-n">เกินกำหนด ' + od + '</span>' : '') + '<small>ยืนยัน แก้ไข RCA และปิดเคส</small></span></button>' : '') +
+      (canQueue ? '<button class="btn big secondary" data-act="risks"><span class="ico">🛡️</span><span>Risk Register<small>ทะเบียนความเสี่ยงของหน่วย</small></span></button>' : '') +
       ((u.role === 'admin' || u.role === 'committee') ?
         '<button class="btn secondary" data-act="admin-web">เปิดหน้า Admin (เว็บ)</button>' : '') +
       '</div>');
@@ -155,7 +158,8 @@
   H['start-quick'] = function () { startReport('quick'); };
   H.mine = viewMine;
   H.stats = viewStats;
-  H.queue = function () { viewQueue(R.STATUS_PENDING || 'รอยืนยัน'); };
+  H.queue = function () { viewQueue('pending'); };
+  H.risks = function () { viewRisks(); };
   H['admin-web'] = function () {
     var url = new URL('admin.html', location.href).href;
     try { liff.openWindow({ url: url, external: true }); } catch (e) { location.href = url; }
@@ -311,14 +315,14 @@
       '<div><label class="f">เวลา</label><input type="time" data-model="W.event_time" value="' + esc(W.event_time) + '"></div></div>' +
       '<label class="f">ช่วงเวลา</label><div class="chips" id="officeBox">' + officeChips() + '</div>' +
       '<div class="muted" id="shiftNote">' + esc(R.shiftOf(W.event_time || '00:00')) + '</div>' +
-      '<label class="f">หน่วยงานที่เกิดเหตุ</label><div class="chips" id="unitBox">' + unitChips() + '</div>',
+      '<label class="f">หน่วยงานที่เกิดเหตุ</label><div id="unitBox">' + unitChips() + '</div>',
       navFooter());
   }
   function officeChips() {
     return ['ในเวลาราชการ', 'นอกเวลาราชการ'].map(function (o) { return chip(o, W.office_hours === o, 'pick-office', o); }).join('');
   }
   function unitChips() {
-    return S.conf.units.map(function (u) { return chip(u.name, W.unit_id === u.id, 'pick-unit', u.id); }).join('');
+    return R.unitPicker('ev', { units: function () { return S.conf.units; }, selected: function () { return [W.unit_id]; }, toggle: function (id) { W.unit_id = id; } });
   }
   function onWhenChange() {
     if (!W.officeTouched && W.event_date && W.event_time) {
@@ -328,7 +332,6 @@
     var note = document.getElementById('shiftNote'); if (note && W.event_time) note.textContent = R.shiftOf(W.event_time);
   }
   H['pick-office'] = function (o) { W.office_hours = o; W.officeTouched = true; document.getElementById('officeBox').innerHTML = officeChips(); };
-  H['pick-unit'] = function (id) { W.unit_id = id; var b = document.getElementById('unitBox'); if (b) b.innerHTML = unitChips(); };
 
   // ขั้น 4: รายละเอียด (แตะเลือก)
   function quickList(field) {
@@ -434,12 +437,106 @@
         '<label class="f">เกือบพลาดแบบไหน</label>' + R.SEV.clinical[0].letters.map(function (l) {
           return '<button class="opt' + (W.severity_code === l.code ? ' on' : '') + '" data-act="quick-letter" data-arg="' + l.code + '"><b>' + esc(l.label) + '</b></button>';
         }).join('') : '') +
-      '<label class="f">หน่วยงาน</label><div class="chips" id="unitBox">' + unitChips() + '</div>' +
+      '<label class="f">หน่วยงาน</label><div id="unitBox">' + unitChips() + '</div>' +
       '<div class="chips"><button class="chip' + (W.anonymous ? ' on' : '') + '" data-act="flag" data-arg="anonymous">ไม่ระบุชื่อ</button></div>',
       '<button class="btn secondary" data-act="prev" style="max-width:130px">ย้อนกลับ</button><button class="btn" data-act="quick-send">ส่ง Near miss</button>');
   }
   H['quick-letter'] = function (c) { W.severity_code = c; viewQuick(); };
   H['quick-send'] = function (_, el) { submitReport(el); };
+
+  // ------------------------------------------------------------------ Risk Register (หัวหน้าหน่วย/กรรมการ/Admin)
+  var LV_COLOR = { red: '#d9363e', orange: '#f08a24', yellow: '#d9a400', green: '#3fae5a' };
+  var LV = [[15, 'red', 'สูงมาก'], [10, 'orange', 'สูง'], [5, 'yellow', 'ปานกลาง'], [1, 'green', 'ต่ำ']];
+  var L_LABEL = ['', 'น้อยมาก', 'น้อย', 'ปานกลาง', 'บ่อย', 'บ่อยมาก'];
+  var C_LABEL = ['', 'เล็กน้อย', 'น้อย', 'ปานกลาง', 'มาก', 'รุนแรงมาก'];
+  function lvOf(score) { return LV.filter(function (l) { return score >= l[0]; })[0]; }
+  function scoreBadge() {
+    var s = (Number(RK.likelihood) || 0) * (Number(RK.consequence) || 0);
+    if (!s) return '<span class="muted">เลือกโอกาสและความรุนแรงเพื่อดูระดับ</span>';
+    var l = lvOf(s);
+    return '<span class="badge" style="background:' + LV_COLOR[l[1]] + ';font-size:15px;padding:4px 14px">คะแนน ' + s + ' · ' + l[2] + '</span>';
+  }
+  async function viewRisks() {
+    S.lastList = viewRisks;
+    render(header('Risk Register', viewHome) + loading());
+    try {
+      var d = await R.api('listRisks', {});
+      S.risks = d.risks;
+      render(header('Risk Register', viewHome) + '<button class="btn" data-act="risk-new">+ เพิ่มความเสี่ยง</button>' +
+        (d.risks.length ? d.risks.map(function (r) {
+          return '<div class="card tap" data-act="risk-open" data-arg="' + esc(r.id) + '"><div class="item-title">' + esc(r.title) + '</div>' +
+            '<div><span class="badge" style="background:' + LV_COLOR[r.level_key] + '">' + r.score + ' · ' + esc(r.level) + '</span>' +
+            (r.review_due ? '<span class="badge" style="background:#d9363e">ถึงรอบทบทวน</span>' : '') + '</div>' +
+            '<div class="muted">' + esc(r.unit) + (r.owner ? ' · ' + esc(r.owner) : '') + ' · ทบทวนครั้งถัดไป ' + esc(r.next_review) + '</div></div>';
+        }).join('') : '<p class="muted center" style="margin-top:12vh">ยังไม่มีรายการ แตะ "เพิ่มความเสี่ยง" เพื่อเริ่ม</p>'));
+    } catch (e) { R.toast(e.message, true); }
+  }
+  H['risk-new'] = function () {
+    var own = S.me.user.unit_ids[0] || '';
+    RK = { id: '', unit_id: own, title: '', definition: '', likelihood: 0, consequence: 0, prevention: '', monitor: '', mitigation: '', qi_plan: '', owner: S.me.user.name, result: '' };
+    viewRiskForm();
+  };
+  H['risk-open'] = function (id) {
+    var r = (S.risks || []).filter(function (x) { return x.id === id; })[0];
+    if (!r) return;
+    RK = { id: r.id, unit_id: r.unit_id, title: r.title, definition: r.definition, likelihood: r.likelihood, consequence: r.consequence,
+      prevention: r.prevention, monitor: r.monitor, mitigation: r.mitigation, qi_plan: r.qi_plan, owner: r.owner, result: '',
+      next_review: r.next_review, last_review: r.last_review, result_of_review: r.result_of_review, review_due: r.review_due };
+    viewRiskForm();
+  };
+  function riskUnits() {
+    var all = S.conf ? S.conf.units : S.me.units;
+    return S.me.user.role === 'head' ? all.filter(function (u) { return S.me.user.unit_ids.indexOf(u.id) >= 0; }) : all;
+  }
+  function scaleChips(field, labels, act) {
+    var out = '<div class="chips">';
+    for (var n = 1; n <= 5; n++) out += '<button class="chip' + (Number(RK[field]) === n ? ' on' : '') + '" data-act="' + act + '" data-arg="' + n + '">' + n + ' ' + labels[n] + '</button>';
+    return out + '</div>';
+  }
+  function ta(model, label, ph, v) { return '<label class="f">' + label + '</label><textarea data-model="RK.' + model + '" placeholder="' + esc(ph || '') + '">' + esc(v || '') + '</textarea>'; }
+  function viewRiskForm() {
+    var h = header(RK.id || 'เพิ่มความเสี่ยง', viewRisks) +
+      '<label class="f">หน่วยงาน</label>' +
+      R.unitPicker('rk', { units: riskUnits, selected: function () { return [RK.unit_id]; }, toggle: function (id) { RK.unit_id = id; } }) +
+      '<label class="f">ชื่อความเสี่ยง</label><input type="text" data-model="RK.title" value="' + esc(RK.title) + '" placeholder="เช่น ตัวอย่างเลือดแตกระหว่างขนส่ง">' +
+      ta('definition', 'คำอธิบาย', '', RK.definition) +
+      '<label class="f">โอกาสเกิด</label><div id="rkL">' + scaleChips('likelihood', L_LABEL, 'rk-l') + '</div>' +
+      '<label class="f">ผลกระทบ/ความรุนแรง</label><div id="rkC">' + scaleChips('consequence', C_LABEL, 'rk-c') + '</div>' +
+      '<div id="rkScore" style="margin:8px 0">' + scoreBadge() + '</div>' +
+      ta('prevention', 'มาตรการป้องกัน', '', RK.prevention) + ta('monitor', 'การเฝ้าระวัง/ติดตาม', '', RK.monitor) +
+      ta('mitigation', 'มาตรการบรรเทาผลกระทบ', '', RK.mitigation) + ta('qi_plan', 'แผนพัฒนาคุณภาพ (ถ้ามี)', '', RK.qi_plan) +
+      '<label class="f">ผู้รับผิดชอบ</label><input type="text" data-model="RK.owner" value="' + esc(RK.owner) + '">';
+    if (RK.id) {
+      h += '<div class="card"><h2>ทบทวนมาตรการ' + (RK.review_due ? ' <span class="badge" style="background:#d9363e">ถึงรอบ</span>' : '') + '</h2>' +
+        '<div class="muted">ทบทวนล่าสุด: ' + esc(RK.last_review || '-') + (RK.result_of_review ? ' · ' + esc(RK.result_of_review) : '') + ' · ครบรอบ ' + esc(RK.next_review) + '</div>' +
+        ta('result', 'ผลการทบทวน', 'เช่น มาตรการเดิมยังเหมาะสม / ปรับขั้นตอน...', RK.result) +
+        '<div class="muted">ปรับโอกาส/ความรุนแรงด้านบนได้หากเปลี่ยนไป</div>' +
+        '<div style="height:8px"></div><button class="btn secondary" data-act="rk-review">บันทึกการทบทวน</button></div>';
+    }
+    render(h, '<button class="btn" data-act="rk-save">บันทึก</button>');
+  }
+  H['rk-l'] = function (n) { RK.likelihood = Number(n); document.getElementById('rkL').innerHTML = scaleChips('likelihood', L_LABEL, 'rk-l'); document.getElementById('rkScore').innerHTML = scoreBadge(); };
+  H['rk-c'] = function (n) { RK.consequence = Number(n); document.getElementById('rkC').innerHTML = scaleChips('consequence', C_LABEL, 'rk-c'); document.getElementById('rkScore').innerHTML = scoreBadge(); };
+  function checkRisk() {
+    if (!RK.unit_id) throw new Error('กรุณาเลือกหน่วยงาน');
+    if (!RK.likelihood || !RK.consequence) throw new Error('กรุณาเลือกโอกาสเกิดและความรุนแรง');
+  }
+  H['rk-save'] = function (_, el) {
+    guard(el, async function () {
+      if (!RK.title || RK.title.trim().length < 3) throw new Error('กรุณาระบุชื่อความเสี่ยง');
+      checkRisk();
+      await R.api('saveRisk', { risk_id: RK.id, unit_id: RK.unit_id, title: RK.title, definition: RK.definition, likelihood: RK.likelihood, consequence: RK.consequence,
+        prevention: RK.prevention, monitor: RK.monitor, mitigation: RK.mitigation, qi_plan: RK.qi_plan, owner: RK.owner });
+      R.toast('บันทึกแล้ว'); viewRisks();
+    });
+  };
+  H['rk-review'] = function (_, el) {
+    guard(el, async function () {
+      checkRisk();
+      await R.api('reviewRisk', { risk_id: RK.id, result: RK.result, likelihood: RK.likelihood, consequence: RK.consequence });
+      R.toast('บันทึกการทบทวนแล้ว'); viewRisks();
+    });
+  };
 
   // ------------------------------------------------------------------ รายการ
   function listCard(r) {
@@ -459,14 +556,19 @@
     } catch (e) { R.toast(e.message, true); }
   }
 
-  async function viewQueue(status) {
-    S.lastList = function () { viewQueue(status); };
-    render(header('คิวตรวจสอบ', viewHome) + loading());
+  async function viewQueue(tab) {
+    tab = tab || 'pending';
+    S.lastList = function () { viewQueue(tab); };
+    render(header('งานของฉัน', viewHome) + loading());
     try {
-      var d = await R.api('queue', { status: status });
-      var tabs = ['รอยืนยัน', 'รอแก้ไข'].map(function (s) { return chip(s, s === status, 'queue-tab', s); }).join('');
-      render(header('คิวตรวจสอบ', viewHome) + '<div class="chips">' + tabs + '</div>' +
-        (d.incidents.length ? d.incidents.map(listCard).join('') : '<p class="muted center" style="margin-top:16vh">ไม่มีเรื่องค้าง</p>'));
+      var d = await R.api('todo', {});
+      var names = [['pending', 'รอยืนยัน'], ['fixing', 'แก้ไข'], ['close', 'รอปิดเคส']];
+      var tabs = names.map(function (n) { return chip(n[1] + ' (' + d[n[0]].length + ')', n[0] === tab, 'queue-tab', n[0]); }).join('');
+      var list = d[tab];
+      render(header('งานของฉัน', viewHome) + '<div class="chips">' + tabs + '</div>' +
+        (list.length ? list.map(function (r) {
+          return listCard(r).replace('</div></div>', '</div>' + (r.overdue ? '<span class="badge" style="background:#d9363e">เกินกำหนด ' + esc(r.due_action_date) + '</span>' : '') + '</div>');
+        }).join('') : '<p class="muted center" style="margin-top:16vh">ไม่มีเรื่องค้าง</p>'));
     } catch (e) { R.toast(e.message, true); }
   }
   H['queue-tab'] = function (s) { viewQueue(s); };
@@ -498,8 +600,10 @@
         co_units: [], is_sentinel: inc.is_sentinel, reason_chip: '', reason_text: '', unit_id: inc.unit_id, back: backFn };
       html += decidePanel();
     }
+    html += R.workHtml(inc);
     render(html);
   }
+  R.bindWork(H, guard, function (id, done) { if (done === 'list') viewQueue('pending'); else viewDetail(id, S.lastList || viewHome); });
   function sevOptions() {
     if (D.type === 'general') return ['1', '2', '3', '4', '5'].map(function (c) {
       return '<option value="' + c + '"' + (c === D.severity_code ? ' selected' : '') + '>ระดับ ' + c + ' · ' + esc(R.GROUP_LABEL[c]) + '</option>';
@@ -515,8 +619,8 @@
   function decidePanel() {
     return '<div class="card"><h2>พิจารณารายงาน</h2>' +
       '<label class="f">ระดับความรุนแรง (ปรับได้)</label><select data-model="D.severity_code">' + sevOptions() + '</select>' +
-      '<label class="f">หน่วยหลักที่แก้ไข</label><div class="chips" id="dUnit">' + decUnitChips() + '</div>' +
-      '<label class="f">หน่วยร่วมแก้ไข (ถ้ามี)</label><div class="chips" id="dCo">' + decCoChips() + '</div>' +
+      '<label class="f">หน่วยหลักที่แก้ไข (เลือกกลุ่มก่อน)</label><div id="dUnit">' + decUnitChips() + '</div>' +
+      '<label class="f">หน่วยร่วมแก้ไข เช่น หอผู้ป่วย/หน่วยสนับสนุน (ถ้ามี)</label><div id="dCo">' + decCoChips() + '</div>' +
       '<div class="chips"><button class="chip' + (D.is_sentinel ? ' on' : '') + '" data-act="dec-sentinel">Sentinel event</button></div>' +
       '<button class="btn" data-act="dec-confirm">ยืนยันเป็นอุบัติการณ์ความเสี่ยง</button>' +
       '<div style="height:10px"></div><button class="btn secondary" data-act="dec-reject-open">ไม่ใช่ความเสี่ยง</button>' +
@@ -526,17 +630,14 @@
       '<button class="btn danger" data-act="dec-reject">ยืนยันว่าไม่ใช่ความเสี่ยง</button></div></div>';
   }
   function decUnitChips() {
-    return S.conf.units.map(function (u) { return chip(u.name, D.assigned_unit_id === u.id, 'dec-unit', u.id); }).join('');
+    return R.unitPicker('asg', { units: function () { return S.conf.units; }, selected: function () { return [D.assigned_unit_id]; },
+      toggle: function (id) { D.assigned_unit_id = id; D.co_units = D.co_units.filter(function (x) { return x !== id; }); },
+      after: function () { R.refreshPicker('co'); } });
   }
   function decCoChips() {
-    return S.conf.units.filter(function (u) { return u.id !== D.assigned_unit_id; })
-      .map(function (u) { return chip(u.name, D.co_units.indexOf(u.id) >= 0, 'dec-co', u.id); }).join('');
+    return R.unitPicker('co', { units: function () { return S.conf.units; }, multi: true, selected: function () { return D.co_units; },
+      exclude: function () { return D.assigned_unit_id; }, toggle: function (id) { toggleIn(D.co_units, id); } });
   }
-  H['dec-unit'] = function (id) {
-    D.assigned_unit_id = id; D.co_units = D.co_units.filter(function (x) { return x !== id; });
-    document.getElementById('dUnit').innerHTML = decUnitChips(); document.getElementById('dCo').innerHTML = decCoChips();
-  };
-  H['dec-co'] = function (id, el) { toggleIn(D.co_units, id); el.classList.toggle('on'); };
   H['dec-sentinel'] = function (_, el) { D.is_sentinel = !D.is_sentinel; el.classList.toggle('on', D.is_sentinel); };
   H['dec-reject-open'] = function () { document.getElementById('rejectBox').style.display = 'block'; };
   H['dec-reason'] = function (r, el) {
@@ -549,7 +650,7 @@
       await R.api('decideIncident', { incident_id: D.id, decision: 'confirm', severity_code: D.severity_code,
         assigned_unit_id: D.assigned_unit_id, co_units: D.co_units, is_sentinel: D.is_sentinel });
       R.toast('ยืนยันแล้ว');
-      viewQueue('รอยืนยัน');
+      viewQueue('pending');
     });
   };
   H['dec-reject'] = function (_, el) {
@@ -557,7 +658,7 @@
       var reason = (D.reason_chip + ' ' + D.reason_text).trim();
       await R.api('decideIncident', { incident_id: D.id, decision: 'reject', reason: reason });
       R.toast('บันทึกว่าไม่ใช่ความเสี่ยงแล้ว');
-      viewQueue('รอยืนยัน');
+      viewQueue('pending');
     });
   };
 

@@ -142,7 +142,9 @@ window.RM = (function () {
       '<div class="kpi"><b>' + s.total + '</b><span>รายงานทั้งหมด</span></div>' +
       '<div class="kpi"><b>' + s.near_miss_pct + '%</b><span>Near miss (เป้า ≥ 60%)</span></div>' +
       '<div class="kpi"><b>' + s.sentinel + '</b><span>Sentinel event</span></div>' +
-      '<div class="kpi"><b>' + s.overdue + '</b><span>เกินกำหนดแก้ไข</span></div></div>' +
+      '<div class="kpi"><b>' + s.overdue + '</b><span>เกินกำหนดแก้ไข</span></div>' +
+      '<div class="kpi"><b>' + (s.closed || 0) + '</b><span>ปิดเคสแล้ว</span></div>' +
+      '<div class="kpi"><b>' + (s.avg_close_days || 0) + '</b><span>วันเฉลี่ยจนปิดเคส</span></div></div>' +
       '<h3>แยกตามระดับความรุนแรง</h3>' + bars(s.by_group, function (k) { return GROUP_LABEL[k] || k; }) +
       '<h3>รายเดือน</h3>' + bars(s.by_month) +
       '<h3>แยกตามหน่วยงาน</h3>' + bars(s.by_unit) +
@@ -153,8 +155,150 @@ window.RM = (function () {
       (s.rejected ? '<p class="muted">ไม่นับ ' + s.rejected + ' เรื่องที่ถูกระบุว่าไม่ใช่ความเสี่ยง</p>' : '');
   }
 
+
+  // ---- กลุ่มหน่วยงาน: ตัวเลือกหน่วยแบบเลือกกลุ่มก่อน
+  var UNIT_GROUPS = ['Lab', 'หอผู้ป่วยใน', 'ผู้ป่วยนอก', 'สนับสนุนอื่นๆ'];
+  var PK = {}, PKG = {};
+  function groupsOf(units) {
+    var g = UNIT_GROUPS.filter(function (x) { return units.some(function (u) { return (u.group || 'Lab') === x; }); });
+    units.forEach(function (u) { var x = u.group || 'Lab'; if (g.indexOf(x) < 0) g.push(x); });
+    return g;
+  }
+  function pickerInner(key) {
+    var o = PK[key], units = o.units(), sel = o.selected(), ex = o.exclude ? o.exclude() : '';
+    var gs = groupsOf(units), cur = PKG[key];
+    if (gs.indexOf(cur) < 0) cur = PKG[key] = gs[0];
+    var gchips = gs.length > 1 ? '<div class="chips">' + gs.map(function (g) {
+      var n = units.filter(function (u) { return (u.group || 'Lab') === g && sel.indexOf(u.id) >= 0; }).length;
+      return '<button class="chip' + (g === cur ? ' on' : '') + '" data-act="pk-g" data-arg="' + esc(key + '|' + g) + '">' + esc(g) + (n ? ' (' + n + ')' : '') + '</button>';
+    }).join('') + '</div>' : '';
+    var uchips = '<div class="chips">' + units.filter(function (u) { return (u.group || 'Lab') === cur && u.id !== ex; }).map(function (u) {
+      return '<button class="chip' + (sel.indexOf(u.id) >= 0 ? ' on' : '') + '" data-act="pk-u" data-arg="' + esc(key + '|' + u.id) + '">' + esc(u.name) + '</button>';
+    }).join('') + '</div>';
+    var other = o.multi ? units.filter(function (u) { return sel.indexOf(u.id) >= 0 && (u.group || 'Lab') !== cur; }) : [];
+    var sum = other.length ? '<div class="muted">เลือกไว้ในกลุ่มอื่น: ' + other.map(function (u) { return esc(u.name); }).join(', ') + '</div>' : '';
+    return gchips + uchips + sum;
+  }
+  /** o: { units():[], selected():[id], toggle(id), exclude?():id, multi?, after?() } */
+  function unitPicker(key, o) {
+    PK[key] = o;
+    if (!PKG[key]) {
+      var s = o.selected()[0], u = o.units().filter(function (x) { return x.id === s; })[0];
+      PKG[key] = u ? (u.group || 'Lab') : '';
+    }
+    return '<div id="pk_' + key + '">' + pickerInner(key) + '</div>';
+  }
+  function refreshPicker(key) { var b = document.getElementById('pk_' + key); if (b && PK[key]) b.innerHTML = pickerInner(key); }
+  function bindPickers(H) {
+    H['pk-g'] = function (arg) { var i = arg.indexOf('|'); PKG[arg.slice(0, i)] = arg.slice(i + 1); refreshPicker(arg.slice(0, i)); };
+    H['pk-u'] = function (arg) {
+      var i = arg.indexOf('|'), key = arg.slice(0, i); PK[key].toggle(arg.slice(i + 1));
+      refreshPicker(key); if (PK[key].after) PK[key].after();
+    };
+  }
+  /** <option> แบ่งกลุ่มด้วย optgroup (หน้า Admin) */
+  function unitOptions(units, selected, allLabel) {
+    var h = allLabel !== undefined ? '<option value="">' + esc(allLabel) + '</option>' : '';
+    groupsOf(units).forEach(function (g) {
+      h += '<optgroup label="' + esc(g) + '">' + units.filter(function (u) { return (u.group || 'Lab') === g; }).map(function (u) {
+        return '<option value="' + esc(u.id) + '"' + (selected === u.id ? ' selected' : '') + '>' + esc(u.name) + '</option>';
+      }).join('') + '</optgroup>';
+    });
+    return h;
+  }
+
+  // ---- Phase 2: ส่วนแก้ไข / RCA / ปิดเคส (ใช้ร่วมกันทั้งสองหน้า)
+  var ACTION_LEVELS = ['แก้ไขเฉพาะหน้า', 'แก้ไขเชิงระบบ', 'ป้องกันไม่ให้เกิดซ้ำ'];
+  var RCA_FACTORS = ['คน/ทักษะ', 'ขั้นตอน/วิธีปฏิบัติ', 'เครื่องมือ/น้ำยา', 'สิ่งแวดล้อม', 'ระบบ IT', 'การสื่อสาร', 'นโยบาย/ภาระงาน'];
+  function ta(id, ph, val, rows) {
+    return '<textarea id="' + id + '" placeholder="' + esc(ph) + '" style="min-height:' + (rows || 64) + 'px">' + esc(val || '') + '</textarea>';
+  }
+  function workHtml(inc) {
+    var h = '';
+    if (inc.actions && inc.actions.length) {
+      h += '<h3>การแก้ไขที่ดำเนินการ (' + inc.actions.length + ')</h3>' + inc.actions.map(function (a) {
+        return '<div class="card"><div><span class="badge" style="background:#3e7bd6">' + esc(a.level) + '</span>' +
+          (a.improved_system === '1' ? '<span class="badge" style="background:#05a647">ปรับปรุงระบบ</span>' : '') + '</div>' +
+          '<div style="margin-top:4px">' + esc(a.summary) + '</div>' +
+          (a.result ? '<div class="muted">ผล: ' + esc(a.result) + '</div>' : '') +
+          '<div class="muted">' + esc(a.actor) + ' · ' + esc(a.started_at) + '</div></div>';
+      }).join('');
+    }
+    if (inc.rca) {
+      var r = inc.rca;
+      h += '<h3>RCA</h3><div class="card"><dl class="kv"><dt>สาเหตุ</dt><dd>' + esc(r.summary) + '</dd>' +
+        (r.factors ? '<dt>ปัจจัย</dt><dd>' + esc(r.factors) + '</dd>' : '') +
+        (r.participants ? '<dt>ผู้ร่วมทำ</dt><dd>' + esc(r.participants) + '</dd>' : '') +
+        (r.short_term_plan ? '<dt>แผนระยะสั้น</dt><dd>' + esc(r.short_term_plan) + '</dd>' : '') +
+        (r.long_term_plan ? '<dt>แผนระยะยาว</dt><dd>' + esc(r.long_term_plan) + '</dd>' : '') +
+        (r.owner ? '<dt>ผู้รับผิดชอบ</dt><dd>' + esc(r.owner) + (r.due_date ? ' · ครบ ' + esc(r.due_date) : '') + '</dd>' : '') +
+        '</dl></div>';
+    }
+    if (inc.can_fix) {
+      var rc = inc.rca || {}, have = (rc.factors || '').split(', ');
+      h += '<div class="card"><h2>บันทึกการแก้ไข</h2>' +
+        '<label class="f">ประเภท</label><select id="wk_level">' + ACTION_LEVELS.map(function (l) { return '<option>' + l + '</option>'; }).join('') + '</select>' +
+        '<label class="f">สิ่งที่ดำเนินการ</label>' + ta('wk_summary', 'เช่น แจ้งแพทย์ ทำซ้ำ ปรับขั้นตอน') +
+        '<label class="f">ผลที่ได้ (ถ้ามี)</label>' + ta('wk_result', 'ผลหลังดำเนินการ', '', 48) +
+        '<label style="display:block;margin:10px 0"><input type="checkbox" id="wk_sys"> เป็นการปรับปรุงระบบ/ขั้นตอน</label>' +
+        '<button class="btn" data-act="w-add" data-arg="' + esc(inc.id) + '">เพิ่มรายการแก้ไข</button></div>' +
+        '<details class="card"' + (inc.rca_required && !inc.rca ? ' open' : '') + '><summary><b>RCA (วิเคราะห์สาเหตุ)</b>' +
+        (inc.rca_required ? ' <span class="badge" style="background:#d9363e">จำเป็นก่อนปิดเคส</span>' : '') + '</summary>' +
+        '<label class="f">ผู้ร่วมวิเคราะห์</label><input type="text" id="wk_part" value="' + esc(rc.participants || '') + '">' +
+        '<label class="f">ปัจจัยที่เกี่ยวข้อง</label><div>' + RCA_FACTORS.map(function (f) {
+          return '<label style="display:inline-block;margin:4px 10px 4px 0"><input type="checkbox" class="wk_f" value="' + esc(f) + '"' + (have.indexOf(f) >= 0 ? ' checked' : '') + '> ' + esc(f) + '</label>';
+        }).join('') + '</div>' +
+        '<label class="f">สาเหตุที่แท้จริง (Root cause)</label>' + ta('wk_rsum', '', rc.summary) +
+        '<label class="f">แผนแก้ไขระยะสั้น</label>' + ta('wk_short', '', rc.short_term_plan, 48) +
+        '<label class="f">แผนป้องกันระยะยาว</label>' + ta('wk_long', '', rc.long_term_plan, 48) +
+        '<div class="grid2"><div><label class="f">ผู้รับผิดชอบ</label><input type="text" id="wk_owner" value="' + esc(rc.owner || '') + '"></div>' +
+        '<div><label class="f">กำหนดเสร็จ</label><input type="date" id="wk_due" value="' + esc(rc.due_date || '') + '"></div></div>' +
+        '<div style="height:10px"></div><button class="btn secondary" data-act="w-rca" data-arg="' + esc(inc.id) + '">บันทึก RCA</button></details>' +
+        '<button class="btn warn" data-act="w-req" data-arg="' + esc(inc.id) + '">ขอปิดเคส (ส่งให้กรรมการ)</button>';
+    }
+    if (inc.can_close) {
+      h += '<div class="card"><h2>พิจารณาปิดเคส</h2>' +
+        '<button class="btn" data-act="w-close" data-arg="' + esc(inc.id) + '">ปิดเคส</button><div style="height:10px"></div>' +
+        ta('wk_ret', 'ส่งกลับ: ระบุสิ่งที่ต้องแก้ไขเพิ่ม', '', 48) +
+        '<button class="btn secondary" data-act="w-return" data-arg="' + esc(inc.id) + '">ส่งกลับให้แก้ไขเพิ่ม</button></div>';
+    }
+    return h;
+  }
+  function val(id) { var e = document.getElementById(id); return e ? e.value.trim() : ''; }
+  /** ลงทะเบียนปุ่มของส่วนแก้ไข: reload(id) เรียกหลังบันทึกสำเร็จ */
+  function bindWork(H, guard, reload) {
+    function run(name, build, msg) {
+      H[name] = function (id, el) {
+        guard(el, async function () {
+          var p = build(id); if (p === null) return;
+          await api(p.action, p.payload); toast(msg); reload(id, p.done);
+        });
+      };
+    }
+    run('w-add', function (id) {
+      return { action: 'addAction', payload: { incident_id: id, level: val('wk_level'), summary: val('wk_summary'), result: val('wk_result'),
+        improved_system: !!(document.getElementById('wk_sys') || {}).checked } };
+    }, 'บันทึกการแก้ไขแล้ว');
+    run('w-rca', function (id) {
+      var f = Array.prototype.map.call(document.querySelectorAll('.wk_f:checked'), function (c) { return c.value; });
+      return { action: 'saveRca', payload: { incident_id: id, participants: val('wk_part'), factors: f, summary: val('wk_rsum'),
+        short_term_plan: val('wk_short'), long_term_plan: val('wk_long'), owner: val('wk_owner'), due_date: val('wk_due') } };
+    }, 'บันทึก RCA แล้ว');
+    run('w-req', function (id) {
+      if (!confirm('ส่งเรื่องนี้ให้กรรมการพิจารณาปิดเคส?')) return null;
+      return { action: 'requestClose', payload: { incident_id: id }, done: 'list' };
+    }, 'ส่งขอปิดเคสแล้ว');
+    run('w-close', function (id) {
+      if (!confirm('ยืนยันปิดเคส?')) return null;
+      return { action: 'closeIncident', payload: { incident_id: id, decision: 'close' }, done: 'list' };
+    }, 'ปิดเคสแล้ว');
+    run('w-return', function (id) {
+      return { action: 'closeIncident', payload: { incident_id: id, decision: 'return', reason: val('wk_ret') } };
+    }, 'ส่งกลับแล้ว');
+  }
+
   return {
-    cfg: cfg, SEV: SEV, GROUP_LABEL: GROUP_LABEL, GROUP_COLOR: GROUP_COLOR, STATUS_COLOR: STATUS_COLOR,
+    cfg: cfg, UNIT_GROUPS: UNIT_GROUPS, unitPicker: unitPicker, refreshPicker: refreshPicker, bindPickers: bindPickers, unitOptions: unitOptions, workHtml: workHtml, bindWork: bindWork, SEV: SEV, GROUP_LABEL: GROUP_LABEL, GROUP_COLOR: GROUP_COLOR, STATUS_COLOR: STATUS_COLOR,
     SENTINEL_LIST: SENTINEL_LIST, esc: esc, initLiff: initLiff, api: api, relogin: relogin, toast: toast,
     pad: pad, bkkNow: bkkNow, suggestOffice: suggestOffice, shiftOf: shiftOf, thaiDateTime: thaiDateTime,
     sevText: sevText, badge: badge, sevBadge: sevBadge, bars: bars, statsHtml: statsHtml
