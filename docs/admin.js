@@ -46,7 +46,7 @@
 
   function drawTabs() {
     var tabs = [['dash', 'ภาพรวม'], ['inc', 'รายงานทั้งหมด'], ['risk', 'Risk Register']];
-    if (S.me.user.role === 'admin') tabs.push(['users', 'ผู้ใช้']);
+    if (S.me.user.role === 'admin') tabs.push(['users', 'ผู้ใช้'], ['setup', 'ตั้งค่า']);
     document.getElementById('tabs').innerHTML = tabs.map(function (t) {
       return '<button class="tab' + (S.tab === t[0] ? ' on' : '') + '" data-act="tab" data-arg="' + t[0] + '">' + t[1] + '</button>';
     }).join('');
@@ -56,6 +56,7 @@
     if (tab === 'dash') viewDash();
     else if (tab === 'inc') viewInc();
     else if (tab === 'risk') viewRisk();
+    else if (tab === 'setup') viewSetup();
     else viewUsers();
   }
   H.tab = go;
@@ -164,6 +165,125 @@
       R.toast('บันทึกการทบทวนแล้ว'); H.close(); viewRisk();
     });
   };
+
+  // ------------------------------------------------------------ ตั้งค่า (Admin): หน่วย/รหัส/ข้อความ/ค่า/Log
+  var ST = { sub: 'units', data: null };
+  var SUBS = [['units', 'หน่วยงาน'], ['catalog', 'รหัสเหตุการณ์'], ['quick', 'ข้อความสำเร็จรูป'], ['config', 'ค่าตั้งค่า'], ['logs', 'บันทึกระบบ']];
+  async function viewSetup(keep) {
+    if (!keep || !ST.data) {
+      $app.innerHTML = '<h1>ตั้งค่า</h1><p class="muted">กำลังโหลด…</p>';
+      try { ST.data = await R.api('adminData', {}); } catch (e) { R.toast(e.message, true); return; }
+    }
+    var nav = '<div class="chips">' + SUBS.map(function (s) { return '<button class="chip' + (ST.sub === s[0] ? ' on' : '') + '" data-act="st-sub" data-arg="' + s[0] + '">' + s[1] + '</button>'; }).join('') + '</div>';
+    var body = { units: stUnits, catalog: stCatalog, quick: stQuick, config: stConfig, logs: stLogs }[ST.sub]();
+    $app.innerHTML = '<h1>ตั้งค่า</h1>' + nav + body;
+  }
+  H['st-sub'] = function (s) { ST.sub = s; viewSetup(true); };
+  function reloadSetup() { ST.data = null; return viewSetup(); }
+  function gv(id) { var e = document.getElementById(id); return e ? e.value.trim() : ''; }
+  function gc(id) { var e = document.getElementById(id); return !!(e && e.checked); }
+
+  function stUnits() {
+    var row = function (u, i) {
+      return '<tr><td>' + esc(u.id) + '</td><td><input type="text" id="un_n' + i + '" value="' + esc(u.name) + '"></td>' +
+        '<td><input type="number" id="un_s' + i + '" value="' + u.sort + '" style="width:70px"></td>' +
+        '<td><label><input type="checkbox" id="un_a' + i + '"' + (u.active ? ' checked' : '') + '> ใช้งาน</label></td>' +
+        '<td><button class="btn small" data-act="un-save" data-arg="' + i + '">บันทึก</button></td></tr>';
+    };
+    return '<div class="notice">การปิดใช้งานหน่วยจะไม่ลบรายงานเดิม แต่จะไม่ให้เลือกเมื่อรายงานใหม่</div><div style="overflow:auto"><table class="t"><thead><tr><th>รหัส</th><th>ชื่อ</th><th>ลำดับ</th><th></th><th></th></tr></thead><tbody>' +
+      ST.data.units.map(row).join('') +
+      '<tr><td><input type="text" id="un_new_id" placeholder="รหัส (ไม่ใส่ก็ได้)" style="width:120px"></td><td><input type="text" id="un_new_n" placeholder="ชื่อหน่วยใหม่"></td><td></td><td></td><td><button class="btn small" data-act="un-add">+ เพิ่ม</button></td></tr></tbody></table></div>';
+  }
+  H['un-save'] = function (i, el) {
+    var u = ST.data.units[Number(i)];
+    guard(el, async function () {
+      await R.api('saveUnit', { id: u.id, name: gv('un_n' + i), sort: gv('un_s' + i), active: gc('un_a' + i) });
+      R.toast('บันทึกแล้ว'); reloadSetup();
+    });
+  };
+  H['un-add'] = function (_, el) {
+    guard(el, async function () {
+      await R.api('saveUnit', { id: gv('un_new_id'), name: gv('un_new_n'), active: true, sort: ST.data.units.length + 1 });
+      R.toast('เพิ่มแล้ว'); reloadSetup();
+    });
+  };
+
+  function stCatalog() {
+    return '<div class="row spread"><span class="muted">' + ST.data.catalog.length + ' รหัส (รหัสที่ไม่ใช้ให้ปิดใช้งาน อย่าลบ เพื่อคงสถิติเดิม)</span><button class="btn small" data-act="cat-new">+ เพิ่มรหัส</button></div>' +
+      '<div style="overflow:auto"><table class="t"><thead><tr><th>รหัส</th><th>เรื่อง</th><th>การ์ด</th><th>ประเภท</th><th>เรื่องย่อย</th><th></th></tr></thead><tbody>' +
+      ST.data.catalog.map(function (c, i) {
+        return '<tr class="click" data-act="cat-open" data-arg="' + i + '"' + (c.active ? '' : ' style="opacity:.5"') + '><td>' + esc(c.code) + '</td><td>' + esc(c.name) + '</td><td>' + esc(c.card) +
+          '</td><td>' + (c.severity_type === 'clinical' ? 'คลินิก' : 'ทั่วไป') + '</td><td>' + c.subtypes.length + '</td><td>' + (c.active ? '' : 'ปิด') + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+  function catForm(c) {
+    var isNew = !c; c = c || { code: '', card: ST.data.cards[0], name: '', severity_type: 'general', subtypes: [], sort: ST.data.catalog.length + 1, active: true };
+    return '<div class="modal-bg"><div class="modal"><div class="row spread"><h2 style="margin:0">' + (isNew ? 'เพิ่มรหัสเหตุการณ์' : esc(c.code)) + '</h2><button class="btn small secondary" data-act="close">ปิด</button></div>' +
+      '<label class="f">รหัส</label><input type="text" id="ct_code" value="' + esc(c.code) + '"' + (isNew ? '' : ' readonly') + '>' +
+      '<label class="f">ชื่อเรื่อง</label><input type="text" id="ct_name" value="' + esc(c.name) + '">' +
+      '<label class="f">การ์ดหมวด</label><select id="ct_card">' + ST.data.cards.concat(ST.data.cards.indexOf(c.card) < 0 ? [c.card] : []).map(function (x) { return '<option' + (x === c.card ? ' selected' : '') + '>' + esc(x) + '</option>'; }).join('') + '</select>' +
+      '<label class="f">ประเภทความรุนแรง</label><select id="ct_type"><option value="clinical"' + (c.severity_type === 'clinical' ? ' selected' : '') + '>ทางคลินิก (A-I)</option><option value="general"' + (c.severity_type === 'general' ? ' selected' : '') + '>ทั่วไป (1-5)</option></select>' +
+      '<label class="f">เรื่องย่อย (บรรทัดละ 1 รายการ)</label><textarea id="ct_sub" style="min-height:110px">' + esc(c.subtypes.join('\n')) + '</textarea>' +
+      '<div class="grid2"><div><label class="f">ลำดับ</label><input type="number" id="ct_sort" value="' + c.sort + '"></div><div style="align-self:end"><label><input type="checkbox" id="ct_act"' + (c.active ? ' checked' : '') + '> ใช้งาน</label></div></div>' +
+      '<div style="height:12px"></div><button class="btn" data-act="cat-save">บันทึก</button></div></div>';
+  }
+  H['cat-new'] = function () { document.getElementById('modal').innerHTML = catForm(null); };
+  H['cat-open'] = function (i) { document.getElementById('modal').innerHTML = catForm(ST.data.catalog[Number(i)]); };
+  H['cat-save'] = function (_, el) {
+    guard(el, async function () {
+      await R.api('saveCatalog', { code: gv('ct_code'), name: gv('ct_name'), card: gv('ct_card'), severity_type: gv('ct_type'),
+        subtypes: document.getElementById('ct_sub').value.split('\n'), sort: gv('ct_sort'), active: gc('ct_act') });
+      R.toast('บันทึกแล้ว'); H.close(); reloadSetup();
+    });
+  };
+
+  var QT = { scope: '', field: 'details' };
+  function qtScopes() {
+    var s = ST.data.cards.slice();
+    ST.data.quick.forEach(function (q) { if (s.indexOf(q.scope) < 0) s.push(q.scope); });
+    return s;
+  }
+  function qtLines() {
+    return ST.data.quick.filter(function (q) { return q.scope === QT.scope && q.field === QT.field; })
+      .sort(function (a, b) { return a.sort - b.sort; }).map(function (q) { return q.text; });
+  }
+  function stQuick() {
+    var scopes = qtScopes(); if (!QT.scope) QT.scope = scopes[0];
+    return '<div class="notice">ข้อความที่ผู้ใช้แตะเลือกในขั้นตอนรายงาน แยกตามหมวดการ์ดและช่อง</div><div class="filters">' +
+      '<div><label class="f">หมวด</label><select id="qt_scope">' + scopes.map(function (x) { return '<option' + (x === QT.scope ? ' selected' : '') + '>' + esc(x) + '</option>'; }).join('') + '</select></div>' +
+      '<div><label class="f">ช่อง</label><select id="qt_field"><option value="details"' + (QT.field === 'details' ? ' selected' : '') + '>รายละเอียดเหตุการณ์</option><option value="action"' + (QT.field === 'action' ? ' selected' : '') + '>การจัดการเบื้องต้น</option></select></div>' +
+      '<div style="align-self:end"><button class="btn small secondary" data-act="qt-load">แสดง</button></div></div>' +
+      '<label class="f">บรรทัดละ 1 ข้อความ</label><textarea id="qt_text" style="min-height:240px">' + esc(qtLines().join('\n')) + '</textarea>' +
+      '<div style="height:10px"></div><button class="btn small" data-act="qt-save">บันทึก</button>';
+  }
+  H['qt-load'] = function () { QT.scope = gv('qt_scope'); QT.field = gv('qt_field'); viewSetup(true); };
+  H['qt-save'] = function (_, el) {
+    guard(el, async function () {
+      QT.scope = gv('qt_scope'); QT.field = gv('qt_field');
+      await R.api('saveQuickText', { scope: QT.scope, field: QT.field, texts: document.getElementById('qt_text').value.split('\n') });
+      R.toast('บันทึกแล้ว'); await reloadSetup();
+    });
+  };
+
+  var CFG_LABEL = { hospital_id: 'รหัส รพ. (ใช้ในเลขที่รายงาน)', hospital_name: 'ชื่อ รพ.', office_start: 'เริ่มเวลาราชการ (HH:MM)', office_end: 'สิ้นสุดเวลาราชการ',
+    shift_morning_start: 'เริ่มเวรเช้า', shift_afternoon_start: 'เริ่มเวรบ่าย', shift_night_start: 'เริ่มเวรดึก',
+    kpi_near_miss: 'เป้า Near miss (%)', kpi_units_report: 'เป้าหน่วยที่รายงาน (%)', kpi_units_register: 'เป้าหน่วยที่มี Risk Register (%)', kpi_rca: 'เป้าทำ RCA (%)', kpi_repeat: 'เพดานเหตุรุนแรงซ้ำ (%)' };
+  function stConfig() {
+    return '<div class="notice">เปลี่ยนรหัส รพ. จะมีผลกับเลขที่รายงานใหม่เท่านั้น</div><div style="overflow:auto"><table class="t"><tbody>' + ST.data.config.map(function (c, i) {
+      return '<tr><td>' + esc(CFG_LABEL[c.key] || c.key) + '<br><span class="muted">' + esc(c.key) + '</span></td><td><input type="text" id="cf_' + i + '" value="' + esc(c.value) + '"></td>' +
+        '<td><button class="btn small" data-act="cf-save" data-arg="' + i + '">บันทึก</button></td></tr>';
+    }).join('') + '</tbody></table></div>';
+  }
+  H['cf-save'] = function (i, el) {
+    guard(el, async function () {
+      await R.api('saveConfig', { key: ST.data.config[Number(i)].key, value: gv('cf_' + i) });
+      R.toast('บันทึกแล้ว'); reloadSetup();
+    });
+  };
+  function stLogs() {
+    return '<p class="muted">150 รายการล่าสุด (รวมการเปิดดูชื่อผู้ป่วยและการเปิดเผยผู้รายงานนิรนาม)</p><div style="overflow:auto"><table class="t"><thead><tr><th>เวลา</th><th>ประเภท</th><th>ผู้ทำ</th><th>การกระทำ</th><th>เป้าหมาย</th><th>รายละเอียด</th></tr></thead><tbody>' +
+      ST.data.logs.map(function (l) { return '<tr><td>' + esc(l.time) + '</td><td>' + esc(l.type) + '</td><td>' + esc(l.user) + '</td><td>' + esc(l.action) + '</td><td>' + esc(l.target) + '</td><td>' + esc(l.detail) + '</td></tr>'; }).join('') + '</tbody></table></div>';
+  }
 
   // ------------------------------------------------------------ รายงานทั้งหมด
   var F = { from: '', to: '', unit_id: '', status: '', group: '', q: '' };
