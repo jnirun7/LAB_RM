@@ -25,7 +25,7 @@
     window.scrollTo(0, 0);
   }
   function header(title, backFn) {
-    S.back = backFn || null;
+    S.back = backFn || null; S.onHome = false;
     return '<div class="top">' + (backFn ? '<button class="back" data-act="back" aria-label="ย้อนกลับ">‹</button>' : '') +
       '<div class="title">' + esc(title) + '</div></div>';
   }
@@ -60,6 +60,7 @@
     if (fn) fn(el.dataset.arg, el, e);
   });
   function onModel(e) {
+    if (e.target.dataset && e.target.dataset.contact !== undefined && D) { D.contacts[e.target.dataset.contact] = e.target.value; return; }
     var m = e.target.dataset && e.target.dataset.model;
     if (!m) return;
     var parts = m.split('.');
@@ -85,32 +86,46 @@
     await boot();
   })();
 
+  // เปิดแอปเร็ว: แสดงหน้าแรกจากข้อมูลที่จำไว้ทันที แล้วโหลดข้อมูลล่าสุดเบื้องหลัง (ข้อมูลที่จำไว้ไม่มีเลขบัตร/ข้อมูลผู้ป่วย)
+  var CACHE_KEY = 'rm_boot_v1';
+  function readBoot() { try { var j = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null'); return j && j.t > Date.now() - 12 * 3600e3 ? j : null; } catch (e) { return null; } }
+  function saveBoot(d) { try { localStorage.setItem(CACHE_KEY, JSON.stringify({ t: Date.now(), me: d, conf: d.conf })); } catch (e) { /* ignore */ } }
+  function applyBoot(d) { S.me = d; S.conf = d.conf || S.conf; }
   async function boot() {
-    render(loading());
+    var id = new URLSearchParams(location.search).get('id');
+    var cached = id ? null : readBoot();
+    var fast = !!(cached && cached.me && cached.me.user && cached.me.user.status === 'active' && cached.conf);
+    if (fast) { applyBoot(Object.assign({}, cached.me, { conf: cached.conf })); S.onHome = true; viewHome(); } else { render(loading()); }
     try {
-      try { S.friend = (await liff.getFriendship()).friendFlag; } catch (e) { S.friend = null; }
-      S.me = await R.api('me', S.friend === null ? {} : { friend: S.friend });
-      var u = S.me.user;
-      if (!u) return viewRegister();
-      if (u.status === 'pending') return viewPending();
-      if (u.status !== 'active') return fatal('บัญชีนี้ถูกปิดการใช้งาน กรุณาติดต่อ Admin');
-      S.conf = await R.api('config');
-      var id = new URLSearchParams(location.search).get('id');
+      var fr = liff.getFriendship().then(function (f) { return f.friendFlag; }, function () { return null; });
+      var friend = fast ? null : await fr;
+      if (!fast) S.friend = friend;
+      var d = await R.api('boot', (fast || S.friend === null) ? {} : { friend: S.friend });
+      fr.then(function (f) { S.friend = f; });
+      var u = d.user;
+      if (!u) { try { localStorage.removeItem(CACHE_KEY); } catch (e) { /* ignore */ } S.me = d; return viewRegister(); }
+      if (u.status === 'pending') { S.me = d; return viewPending(); }
+      if (u.status !== 'active') { try { localStorage.removeItem(CACHE_KEY); } catch (e) { /* ignore */ } return fatal('บัญชีนี้ถูกปิดการใช้งาน กรุณาติดต่อ Admin'); }
+      saveBoot(d);
+      var changed = !fast || JSON.stringify(cached.me.user) !== JSON.stringify(d.user) || JSON.stringify(cached.conf) !== JSON.stringify(d.conf);
+      applyBoot(d);
       if (id) return viewDetail(id, viewHome);
-      viewHome();
+      if (!fast || (changed && S.onHome)) viewHome();
     } catch (e) {
-      fatal(e.message);
+      if (!fast) fatal(e.message);
     }
   }
 
   // ------------------------------------------------------------------ ลงทะเบียน
   var POSITIONS = ['นักเทคนิคการแพทย์', 'เจ้าพนักงานวิทยาศาสตร์การแพทย์', 'ผู้ช่วย/พนักงานทั่วไป', 'อื่นๆ'];
   function viewRegister() {
-    REG = REG || { name: '', position: '', unit_ids: [] };
+    REG = REG || { name: '', position: '', unit_ids: [], cid: '' };
     var units = S.me.units || [];
     render(header('ลงทะเบียนใช้งาน') +
       '<p class="muted">กรอกครั้งเดียว แล้วรอ Admin อนุมัติ</p>' + friendBanner() +
       '<label class="f">ชื่อ-สกุล</label><input type="text" data-model="REG.name" value="' + esc(REG.name) + '" placeholder="เช่น สมชาย ใจดี">' +
+      '<label class="f">เลขบัตรประชาชน 13 หลัก</label><input type="text" inputmode="numeric" autocomplete="off" maxlength="17" data-model="REG.cid" value="' + esc(REG.cid) + '" placeholder="X-XXXX-XXXXX-XX-X">' +
+      '<div class="muted">ใช้เพื่อส่งแจ้งเตือนผ่าน MOPH Alert ถึงตัวท่านเท่านั้น ระบบเก็บไว้ในฐานข้อมูลที่ Admin เข้าถึง และไม่แสดงเต็มที่ใด</div>' +
       '<label class="f">ตำแหน่ง</label><div class="chips">' +
       POSITIONS.map(function (p) { return chip(p, REG.position === p, 'reg-pos', p); }).join('') + '</div>' +
       '<label class="f">หน่วยงาน (เลือกได้หลายหน่วย)</label>' +
@@ -123,7 +138,8 @@
     guard(el, async function () {
       if (REG.name.trim().length < 2) throw new Error('กรุณากรอกชื่อ-สกุล');
       if (!REG.unit_ids.length) throw new Error('กรุณาเลือกหน่วยงานอย่างน้อย 1 หน่วย');
-      await R.api('register', { name: REG.name, position: REG.position, unit_ids: REG.unit_ids, friend: S.friend === true });
+      if (!R.cidOk(REG.cid)) throw new Error('เลขบัตรประชาชนไม่ถูกต้อง');
+      await R.api('register', { name: REG.name, position: REG.position, cid: REG.cid.replace(/\D/g, ''), unit_ids: REG.unit_ids, friend: S.friend === true });
       await boot();
     });
   };
@@ -135,25 +151,48 @@
 
   // ------------------------------------------------------------------ หน้าแรก
   async function viewHome() {
-    render(loading());
     var u = S.me.user, canQueue = ['head', 'committee', 'admin'].indexOf(u.role) >= 0, qn = 0;
     var od = 0;
-    if (canQueue) { try { var t = await R.api('todo', {}); qn = t.pending.length + t.close.length; od = t.fixing.filter(function (x) { return x.overdue; }).length; } catch (e) { /* ignore */ } }
+    S.onHome = true;
     S.back = null;
     render('<h1>สวัสดี ' + esc(u.name) + '</h1><div class="muted">' + esc(ROLE_TEXT[u.role] || '') + ' · ' +
-      esc(u.unit_ids.map(unitName).join(', ')) + '</div>' + friendBanner() +
+      esc(u.unit_ids.map(unitName).join(', ')) + '</div>' + friendBanner() + cidBanner() +
       '<div class="big-actions">' +
       '<button class="btn big" data-act="start-full"><span class="ico">📝</span><span>รายงานเหตุการณ์<small>เลือกประเภท ระดับ เวลา แล้วส่ง</small></span></button>' +
       '<button class="btn big secondary" data-act="start-quick"><span class="ico">⚡</span><span>Near miss ด่วน<small>เกือบพลาด ส่งได้ในไม่กี่แตะ</small></span></button>' +
       '<button class="btn big secondary" data-act="mine"><span class="ico">📂</span><span>เรื่องของฉัน<small>ดูความคืบหน้าเรื่องที่รายงาน</small></span></button>' +
       '<button class="btn big secondary" data-act="stats"><span class="ico">📊</span><span>สถิติ<small>ภาพรวมของห้องปฏิบัติการ</small></span></button>' +
       (canQueue ? '<button class="btn big warn" data-act="queue"><span class="ico">✅</span><span>งานของฉัน' +
-        (qn ? '<span class="badge-n">' + qn + '</span>' : '') + (od ? '<span class="badge-n">เกินกำหนด ' + od + '</span>' : '') + '<small>ยืนยัน แก้ไข RCA และปิดเคส</small></span></button>' : '') +
+        '<span id="qBadges"></span><small>ยืนยัน แก้ไข RCA และปิดเคส</small></span></button>' : '') +
       (canQueue ? '<button class="btn big secondary" data-act="risks"><span class="ico">🛡️</span><span>Risk Register<small>ทะเบียนความเสี่ยงของหน่วย</small></span></button>' : '') +
       ((u.role === 'admin' || u.role === 'committee') ?
         '<button class="btn secondary" data-act="admin-web">เปิดหน้า Admin (เว็บ)</button>' : '') +
       '</div>');
+    if (canQueue) {
+      try {
+        var t = await R.api('todo', {});
+        var b = document.getElementById('qBadges');
+        if (b && S.onHome) {
+          qn = t.pending.length + t.close.length; od = t.fixing.filter(function (x) { return x.overdue; }).length;
+          b.innerHTML = (qn ? '<span class="badge-n">' + qn + '</span>' : '') + (od ? '<span class="badge-n">เกินกำหนด ' + od + '</span>' : '');
+        }
+      } catch (e) { /* ignore */ }
+    }
   }
+  function cidBanner() {
+    if (S.me.user.has_cid) return '';
+    return '<div class="notice"><b>ยังไม่มีเลขบัตรประชาชน</b> — ต้องใช้เพื่อรับแจ้งเตือนผ่าน MOPH Alert' +
+      '<input type="text" inputmode="numeric" autocomplete="off" maxlength="17" id="cidIn" placeholder="X-XXXX-XXXXX-XX-X" style="margin-top:8px">' +
+      '<div style="margin-top:8px"><button class="btn small" data-act="cid-save">บันทึก</button></div></div>';
+  }
+  H['cid-save'] = function (_, el) {
+    guard(el, async function () {
+      var v = document.getElementById('cidIn').value;
+      if (!R.cidOk(v)) throw new Error('เลขบัตรประชาชนไม่ถูกต้อง');
+      await R.api('setCid', { cid: v.replace(/\D/g, '') });
+      S.me.user.has_cid = true; R.toast('บันทึกแล้ว'); viewHome();
+    });
+  };
   H['start-full'] = function () { startReport('full'); };
   H['start-quick'] = function () { startReport('quick'); };
   H.mine = viewMine;
@@ -590,6 +629,8 @@
       (p.sex ? ' · ' + p.sex : '') + (p.age !== '' ? ' · ' + p.age + ' ปี' : '') + (p.name_masked ? ' (ชื่อปิดบางส่วน)' : '')]);
     if (inc.confirmed_by) rows.push(['ผู้พิจารณา', inc.confirmed_by + ' · ' + R.thaiDateTime(inc.confirmed_at)]);
     if (inc.assigned_unit_id) rows.push(['หน่วยที่แก้ไข', unitName(inc.assigned_unit_id) + (inc.co_units.length ? ' (ร่วม: ' + inc.co_units.map(unitName).join(', ') + ')' : '')]);
+    var ucs = inc.unit_contacts || {};
+    Object.keys(ucs).forEach(function (id) { rows.push(['ผู้ประสาน · ' + unitName(id), ucs[id]]); });
     if (inc.due_action_date) rows.push(['กำหนดแก้ไข', R.thaiDateTime(inc.due_action_date)]);
     if (inc.reject_reason) rows.push(['เหตุผลที่ไม่ใช่ความเสี่ยง', inc.reject_reason]);
     var html = header('รายละเอียด', backFn) + '<div>' + R.badge(inc.status) + R.sevBadge(inc) +
@@ -597,10 +638,10 @@
       '<div class="card"><dl class="kv">' + rows.map(function (r) { return '<dt>' + esc(r[0]) + '</dt><dd>' + esc(r[1]) + '</dd>'; }).join('') + '</dl></div>';
     if (inc.can_decide) {
       D = { id: inc.id, type: inc.severity_type, severity_code: inc.severity_code, assigned_unit_id: inc.unit_id,
-        co_units: [], is_sentinel: inc.is_sentinel, reason_chip: '', reason_text: '', unit_id: inc.unit_id, back: backFn };
+        co_units: [], contacts: {}, is_sentinel: inc.is_sentinel, reason_chip: '', reason_text: '', unit_id: inc.unit_id, back: backFn };
       html += decidePanel();
     }
-    html += R.workHtml(inc);
+    html += R.workHtml(inc, unitName);
     render(html);
   }
   R.bindWork(H, guard, function (id, done) { if (done === 'list') viewQueue('pending'); else viewDetail(id, S.lastList || viewHome); });
@@ -620,7 +661,7 @@
     return '<div class="card"><h2>พิจารณารายงาน</h2>' +
       '<label class="f">ระดับความรุนแรง (ปรับได้)</label><select data-model="D.severity_code">' + sevOptions() + '</select>' +
       '<label class="f">หน่วยหลักที่แก้ไข (เลือกกลุ่มก่อน)</label><div id="dUnit">' + decUnitChips() + '</div>' +
-      '<label class="f">หน่วยร่วมแก้ไข เช่น หอผู้ป่วย/หน่วยสนับสนุน (ถ้ามี)</label><div id="dCo">' + decCoChips() + '</div>' +
+      '<label class="f">หน่วยร่วมแก้ไข เช่น หอผู้ป่วย/หน่วยสนับสนุน (ถ้ามี)</label><div id="dCo">' + decCoChips() + '</div><div id="dContacts">' + contactsHtml() + '</div>' +
       '<div class="chips"><button class="chip' + (D.is_sentinel ? ' on' : '') + '" data-act="dec-sentinel">Sentinel event</button></div>' +
       '<button class="btn" data-act="dec-confirm">ยืนยันเป็นอุบัติการณ์ความเสี่ยง</button>' +
       '<div style="height:10px"></div><button class="btn secondary" data-act="dec-reject-open">ไม่ใช่ความเสี่ยง</button>' +
@@ -632,12 +673,19 @@
   function decUnitChips() {
     return R.unitPicker('asg', { units: function () { return S.conf.units; }, selected: function () { return [D.assigned_unit_id]; },
       toggle: function (id) { D.assigned_unit_id = id; D.co_units = D.co_units.filter(function (x) { return x !== id; }); },
-      after: function () { R.refreshPicker('co'); } });
+      after: function () { R.refreshPicker('co'); drawContacts(); } });
   }
   function decCoChips() {
     return R.unitPicker('co', { units: function () { return S.conf.units; }, multi: true, selected: function () { return D.co_units; },
-      exclude: function () { return D.assigned_unit_id; }, toggle: function (id) { toggleIn(D.co_units, id); } });
+      exclude: function () { return D.assigned_unit_id; }, toggle: function (id) { toggleIn(D.co_units, id); }, after: drawContacts });
   }
+  function contactsHtml() {
+    var ids = [D.assigned_unit_id].concat(D.co_units).filter(String);
+    return ids.map(function (id) {
+      return '<label class="f">ผู้ประสาน/ผู้รับเรื่อง · ' + esc(unitName(id)) + ' (ไม่บังคับ)</label><input type="text" data-contact="' + esc(id) + '" value="' + esc(D.contacts[id] || '') + '" placeholder="ชื่อเจ้าหน้าที่ เพื่อทวนสอบภายหลัง">';
+    }).join('');
+  }
+  function drawContacts() { var b = document.getElementById('dContacts'); if (b) b.innerHTML = contactsHtml(); }
   H['dec-sentinel'] = function (_, el) { D.is_sentinel = !D.is_sentinel; el.classList.toggle('on', D.is_sentinel); };
   H['dec-reject-open'] = function () { document.getElementById('rejectBox').style.display = 'block'; };
   H['dec-reason'] = function (r, el) {
@@ -648,7 +696,7 @@
   H['dec-confirm'] = function (_, el) {
     guard(el, async function () {
       await R.api('decideIncident', { incident_id: D.id, decision: 'confirm', severity_code: D.severity_code,
-        assigned_unit_id: D.assigned_unit_id, co_units: D.co_units, is_sentinel: D.is_sentinel });
+        assigned_unit_id: D.assigned_unit_id, co_units: D.co_units, unit_contacts: D.contacts, is_sentinel: D.is_sentinel });
       R.toast('ยืนยันแล้ว');
       viewQueue('pending');
     });

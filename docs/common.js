@@ -167,12 +167,16 @@ window.RM = (function () {
   function pickerInner(key) {
     var o = PK[key], units = o.units(), sel = o.selected(), ex = o.exclude ? o.exclude() : '';
     var gs = groupsOf(units), cur = PKG[key];
-    if (gs.indexOf(cur) < 0) cur = PKG[key] = gs[0];
-    var gchips = gs.length > 1 ? '<div class="chips">' + gs.map(function (g) {
+    if (gs.indexOf(cur) < 0) {
+      var first = units.filter(function (u) { return sel.indexOf(u.id) >= 0; })[0];
+      cur = PKG[key] = first ? (first.group || 'Lab') : (gs.length === 1 ? gs[0] : '');
+    }
+    var gchips = gs.length > 1 ? '<div class="muted" style="margin-top:4px">1) เลือกกลุ่มงาน</div><div class="chips">' + gs.map(function (g) {
       var n = units.filter(function (u) { return (u.group || 'Lab') === g && sel.indexOf(u.id) >= 0; }).length;
       return '<button class="chip' + (g === cur ? ' on' : '') + '" data-act="pk-g" data-arg="' + esc(key + '|' + g) + '">' + esc(g) + (n ? ' (' + n + ')' : '') + '</button>';
     }).join('') + '</div>' : '';
-    var uchips = '<div class="chips">' + units.filter(function (u) { return (u.group || 'Lab') === cur && u.id !== ex; }).map(function (u) {
+    if (!cur) return gchips + '<div class="muted">เลือกกลุ่มงานก่อน แล้วจะแสดงหน่วยงานในกลุ่มนั้น</div>';
+    var uchips = (gs.length > 1 ? '<div class="muted">2) เลือกหน่วยงานในกลุ่ม ' + esc(cur) + '</div>' : '') + '<div class="chips">' + units.filter(function (u) { return (u.group || 'Lab') === cur && u.id !== ex; }).map(function (u) {
       return '<button class="chip' + (sel.indexOf(u.id) >= 0 ? ' on' : '') + '" data-act="pk-u" data-arg="' + esc(key + '|' + u.id) + '">' + esc(u.name) + '</button>';
     }).join('') + '</div>';
     var other = o.multi ? units.filter(function (u) { return sel.indexOf(u.id) >= 0 && (u.group || 'Lab') !== cur; }) : [];
@@ -196,6 +200,27 @@ window.RM = (function () {
       refreshPicker(key); if (PK[key].after) PK[key].after();
     };
   }
+  var SEL2 = {};
+  function unitOpts2(id, group, selected) {
+    var o = SEL2[id], units = o.units.filter(function (u) { return (u.group || 'Lab') === group; });
+    var first = group ? (o.all !== undefined ? '<option value="">ทุกหน่วยในกลุ่ม</option>' : '<option value="">— เลือกหน่วย —</option>') : (o.all !== undefined ? '<option value="">' + esc(o.all) + '</option>' : '<option value="">— เลือกกลุ่มก่อน —</option>');
+    return first + units.map(function (u) { return '<option value="' + esc(u.id) + '"' + (u.id === selected ? ' selected' : '') + '>' + esc(u.name) + '</option>'; }).join('');
+  }
+  /** เลือกกลุ่มงานก่อน แล้วค่อยเลือกหน่วยในกลุ่ม (หน้า Admin) — ค่าหน่วยอ่านจาก #id */
+  function unitSelect2(id, units, selected, allLabel) {
+    SEL2[id] = { units: units, all: allLabel };
+    var cur = (units.filter(function (u) { return u.id === selected; })[0] || {}).group || '';
+    var gs = groupsOf(units);
+    return '<div class="grid2"><select id="' + id + '_g" data-ug="' + id + '"><option value="">' + (allLabel !== undefined ? 'ทุกกลุ่ม' : '— เลือกกลุ่มงาน —') + '</option>' +
+      gs.map(function (g) { return '<option' + (g === cur ? ' selected' : '') + '>' + esc(g) + '</option>'; }).join('') + '</select>' +
+      '<select id="' + id + '">' + unitOpts2(id, cur, selected) + '</select></div>';
+  }
+  document.addEventListener('change', function (e) {
+    var id = e.target && e.target.dataset && e.target.dataset.ug;
+    if (!id || !SEL2[id]) return;
+    var sel = document.getElementById(id);
+    if (sel) sel.innerHTML = unitOpts2(id, e.target.value, '');
+  });
   /** <option> แบ่งกลุ่มด้วย optgroup (หน้า Admin) */
   function unitOptions(units, selected, allLabel) {
     var h = allLabel !== undefined ? '<option value="">' + esc(allLabel) + '</option>' : '';
@@ -213,7 +238,8 @@ window.RM = (function () {
   function ta(id, ph, val, rows) {
     return '<textarea id="' + id + '" placeholder="' + esc(ph) + '" style="min-height:' + (rows || 64) + 'px">' + esc(val || '') + '</textarea>';
   }
-  function workHtml(inc) {
+  function workHtml(inc, unitName) {
+    unitName = unitName || function (x) { return x; };
     var h = '';
     if (inc.actions && inc.actions.length) {
       h += '<h3>การแก้ไขที่ดำเนินการ (' + inc.actions.length + ')</h3>' + inc.actions.map(function (a) {
@@ -221,6 +247,7 @@ window.RM = (function () {
           (a.improved_system === '1' ? '<span class="badge" style="background:#05a647">ปรับปรุงระบบ</span>' : '') + '</div>' +
           '<div style="margin-top:4px">' + esc(a.summary) + '</div>' +
           (a.result ? '<div class="muted">ผล: ' + esc(a.result) + '</div>' : '') +
+          (a.contact ? '<div class="muted">ประสาน/ผู้รับเรื่อง: ' + esc(a.contact) + '</div>' : '') +
           '<div class="muted">' + esc(a.actor) + ' · ' + esc(a.started_at) + '</div></div>';
       }).join('');
     }
@@ -240,8 +267,10 @@ window.RM = (function () {
         '<label class="f">ประเภท</label><select id="wk_level">' + ACTION_LEVELS.map(function (l) { return '<option>' + l + '</option>'; }).join('') + '</select>' +
         '<label class="f">สิ่งที่ดำเนินการ</label>' + ta('wk_summary', 'เช่น แจ้งแพทย์ ทำซ้ำ ปรับขั้นตอน') +
         '<label class="f">ผลที่ได้ (ถ้ามี)</label>' + ta('wk_result', 'ผลหลังดำเนินการ', '', 48) +
+        '<label class="f">ประสานกับ/ผู้รับเรื่อง (ไม่บังคับ)</label><input type="text" id="wk_contact" placeholder="เช่น ตึกศัลยกรรม: พยาบาลสมศรี รับเรื่อง 14:10">' +
         '<label style="display:block;margin:10px 0"><input type="checkbox" id="wk_sys"> เป็นการปรับปรุงระบบ/ขั้นตอน</label>' +
         '<button class="btn" data-act="w-add" data-arg="' + esc(inc.id) + '">เพิ่มรายการแก้ไข</button></div>' +
+        contactsCard(inc, unitName) +
         '<details class="card"' + (inc.rca_required && !inc.rca ? ' open' : '') + '><summary><b>RCA (วิเคราะห์สาเหตุ)</b>' +
         (inc.rca_required ? ' <span class="badge" style="background:#d9363e">จำเป็นก่อนปิดเคส</span>' : '') + '</summary>' +
         '<label class="f">ผู้ร่วมวิเคราะห์</label><input type="text" id="wk_part" value="' + esc(rc.participants || '') + '">' +
@@ -264,7 +293,21 @@ window.RM = (function () {
     }
     return h;
   }
+  function contactsCard(inc, unitName) {
+    var ids = [inc.assigned_unit_id].concat(inc.co_units || []).filter(String);
+    if (!ids.length) return '';
+    var uc = inc.unit_contacts || {};
+    return '<div class="card"><h3 style="margin-top:0">ผู้ประสาน/ผู้รับเรื่องของแต่ละหน่วย</h3>' + ids.map(function (id) {
+      return '<label class="f">' + esc(unitName(id)) + '</label><input type="text" class="wk_c" data-unit="' + esc(id) + '" value="' + esc(uc[id] || '') + '" placeholder="ชื่อเจ้าหน้าที่ (ไม่บังคับ)">';
+    }).join('') + '<div style="height:8px"></div><button class="btn secondary small" data-act="w-contacts" data-arg="' + esc(inc.id) + '">บันทึกชื่อผู้ประสาน</button></div>';
+  }
   function val(id) { var e = document.getElementById(id); return e ? e.value.trim() : ''; }
+  function cidOk(s) {
+    s = String(s || '').replace(/\D/g, '');
+    if (s.length !== 13) return false;
+    var sum = 0; for (var i = 0; i < 12; i++) sum += Number(s.charAt(i)) * (13 - i);
+    return (11 - (sum % 11)) % 10 === Number(s.charAt(12));
+  }
   /** ลงทะเบียนปุ่มของส่วนแก้ไข: reload(id) เรียกหลังบันทึกสำเร็จ */
   function bindWork(H, guard, reload) {
     function run(name, build, msg) {
@@ -277,8 +320,13 @@ window.RM = (function () {
     }
     run('w-add', function (id) {
       return { action: 'addAction', payload: { incident_id: id, level: val('wk_level'), summary: val('wk_summary'), result: val('wk_result'),
-        improved_system: !!(document.getElementById('wk_sys') || {}).checked } };
+        improved_system: !!(document.getElementById('wk_sys') || {}).checked, contact: val('wk_contact') } };
     }, 'บันทึกการแก้ไขแล้ว');
+    run('w-contacts', function (id) {
+      var m = {};
+      Array.prototype.forEach.call(document.querySelectorAll('.wk_c'), function (i) { if (i.value.trim()) m[i.dataset.unit] = i.value.trim(); });
+      return { action: 'setContacts', payload: { incident_id: id, unit_contacts: m } };
+    }, 'บันทึกชื่อผู้ประสานแล้ว');
     run('w-rca', function (id) {
       var f = Array.prototype.map.call(document.querySelectorAll('.wk_f:checked'), function (c) { return c.value; });
       return { action: 'saveRca', payload: { incident_id: id, participants: val('wk_part'), factors: f, summary: val('wk_rsum'),
@@ -298,7 +346,7 @@ window.RM = (function () {
   }
 
   return {
-    cfg: cfg, UNIT_GROUPS: UNIT_GROUPS, unitPicker: unitPicker, refreshPicker: refreshPicker, bindPickers: bindPickers, unitOptions: unitOptions, workHtml: workHtml, bindWork: bindWork, SEV: SEV, GROUP_LABEL: GROUP_LABEL, GROUP_COLOR: GROUP_COLOR, STATUS_COLOR: STATUS_COLOR,
+    cfg: cfg, cidOk: cidOk, UNIT_GROUPS: UNIT_GROUPS, unitPicker: unitPicker, refreshPicker: refreshPicker, bindPickers: bindPickers, unitOptions: unitOptions, unitSelect2: unitSelect2, workHtml: workHtml, bindWork: bindWork, SEV: SEV, GROUP_LABEL: GROUP_LABEL, GROUP_COLOR: GROUP_COLOR, STATUS_COLOR: STATUS_COLOR,
     SENTINEL_LIST: SENTINEL_LIST, esc: esc, initLiff: initLiff, api: api, relogin: relogin, toast: toast,
     pad: pad, bkkNow: bkkNow, suggestOffice: suggestOffice, shiftOf: shiftOf, thaiDateTime: thaiDateTime,
     sevText: sevText, badge: badge, sevBadge: sevBadge, bars: bars, statsHtml: statsHtml

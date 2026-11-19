@@ -28,13 +28,13 @@
   (async function () {
     try {
       if (!(await R.initLiff())) return;
-      S.me = await R.api('me', {});
+      S.me = await R.api('boot', {});
       var u = S.me.user;
       if (!u || u.status !== 'active' || ['admin', 'committee'].indexOf(u.role) < 0) {
         $app.innerHTML = '<div class="card" style="margin-top:15vh"><h2>ไม่มีสิทธิ์เข้าหน้านี้</h2><p class="muted">หน้านี้สำหรับ Admin และกรรมการ RM</p></div>';
         return;
       }
-      S.conf = await R.api('config');
+      S.conf = S.me.conf;
       document.getElementById('who').textContent = u.name + ' (' + ROLE_TEXT[u.role] + ')';
       var lo = document.getElementById('logout'); lo.style.display = ''; lo.onclick = function () { liff.logout(); location.reload(); };
       drawTabs();
@@ -66,8 +66,8 @@
   async function viewDash() {
     $app.innerHTML = '<h1>ภาพรวมและตัวชี้วัด</h1>' + dashFilters() + '<p class="muted">กำลังโหลด…</p>';
     try {
-      var res = await Promise.all([R.api('stats', { from: DASH.from, to: DASH.to }), R.api('kpis', { from: DASH.from, to: DASH.to })]);
-      var s = res[0], k = res[1];
+      var res = await R.api('dashboard', { from: DASH.from, to: DASH.to });
+      var s = res.stats, k = res.kpis;
       $app.innerHTML = '<h1>ภาพรวมและตัวชี้วัด</h1>' + dashFilters() + kpiHtml(k) +
         '<div style="max-width:720px">' + R.statsHtml(s) + '</div>';
       bindDash();
@@ -113,8 +113,7 @@
     try {
       var d = await R.api('listRisks', { unit_id: RK.unit_id });
       RK.list = d.risks;
-      $app.innerHTML = '<h1>Risk Register</h1><div class="filters"><div><label class="f">หน่วยงาน</label><select id="rkUnit"><option value="">ทั้งหมด</option>' +
-        R.unitOptions(S.conf.units, RK.unit_id) + '</select></div>' +
+      $app.innerHTML = '<h1>Risk Register</h1><div class="filters"><div><label class="f">กลุ่มงาน / หน่วยงาน</label>' + R.unitSelect2('rkUnit', S.conf.units, RK.unit_id, 'ทั้งหมด') + '</div>' +
         '<div style="align-self:end;display:flex;gap:8px"><button class="btn small secondary" data-act="rk-filter">กรอง</button><button class="btn small" data-act="rk-new">+ เพิ่มความเสี่ยง</button></div></div>' +
         '<div style="overflow:auto"><table class="t"><thead><tr><th>รหัส</th><th>ความเสี่ยง</th><th>หน่วย</th><th>คะแนน</th><th>ผู้รับผิดชอบ</th><th>ทบทวนล่าสุด</th><th>ครบรอบ</th></tr></thead><tbody>' +
         (d.risks.length ? d.risks.map(function (r) {
@@ -133,7 +132,7 @@
   function riskForm(r) {
     r = r || { likelihood: 3, consequence: 3 };
     var h = '<div class="modal-bg"><div class="modal"><div class="row spread"><h2 style="margin:0">' + (r.id ? esc(r.id) : 'เพิ่มความเสี่ยง') + '</h2><button class="btn small secondary" data-act="close">ปิด</button></div>' +
-      '<label class="f">หน่วยงาน</label><select id="rk_unit">' + R.unitOptions(S.conf.units, r.unit_id) + '</select>' +
+      '<label class="f">กลุ่มงาน / หน่วยงาน</label>' + R.unitSelect2('rk_unit', S.conf.units, r.unit_id) +
       '<label class="f">ชื่อความเสี่ยง</label><input type="text" id="rk_title" value="' + esc(r.title || '') + '">' +
       txt('rk_def', 'คำอธิบาย/นิยาม', r.definition) +
       '<div class="grid2">' + numSel('rk_L', r.likelihood, 'โอกาสเกิด') + numSel('rk_C', r.consequence, 'ความรุนแรง') + '</div>' +
@@ -167,21 +166,83 @@
   };
 
   // ------------------------------------------------------------ ตั้งค่า (Admin): หน่วย/รหัส/ข้อความ/ค่า/Log
-  var ST = { sub: 'units', data: null };
-  var SUBS = [['units', 'หน่วยงาน'], ['catalog', 'รหัสเหตุการณ์'], ['quick', 'ข้อความสำเร็จรูป'], ['config', 'ค่าตั้งค่า'], ['logs', 'บันทึกระบบ']];
+  var ST = { sub: 'conn', data: null, conn: null };
+  var SUBS = [['conn', 'การเชื่อมต่อ/แจ้งเตือน'], ['units', 'หน่วยงาน'], ['catalog', 'รหัสเหตุการณ์'], ['quick', 'ข้อความสำเร็จรูป'], ['config', 'ค่าตั้งค่า'], ['logs', 'บันทึกระบบ']];
   async function viewSetup(keep) {
     if (!keep || !ST.data) {
       $app.innerHTML = '<h1>ตั้งค่า</h1><p class="muted">กำลังโหลด…</p>';
       try { ST.data = await R.api('adminData', {}); } catch (e) { R.toast(e.message, true); return; }
     }
     var nav = '<div class="chips">' + SUBS.map(function (s) { return '<button class="chip' + (ST.sub === s[0] ? ' on' : '') + '" data-act="st-sub" data-arg="' + s[0] + '">' + s[1] + '</button>'; }).join('') + '</div>';
-    var body = { units: stUnits, catalog: stCatalog, quick: stQuick, config: stConfig, logs: stLogs }[ST.sub]();
+    if (ST.sub === 'conn' && !ST.conn) {
+      try { ST.conn = await R.api('getSettings', {}); } catch (e) { R.toast(e.message, true); return; }
+    }
+    var body = { conn: stConn, units: stUnits, catalog: stCatalog, quick: stQuick, config: stConfig, logs: stLogs }[ST.sub]();
     $app.innerHTML = '<h1>ตั้งค่า</h1>' + nav + body;
   }
   H['st-sub'] = function (s) { ST.sub = s; viewSetup(true); };
-  function reloadSetup() { ST.data = null; return viewSetup(); }
+  function reloadSetup() { ST.data = null; ST.conn = null; return viewSetup(); }
   function gv(id) { var e = document.getElementById(id); return e ? e.value.trim() : ''; }
   function gc(id) { var e = document.getElementById(id); return !!(e && e.checked); }
+  // ---- การเชื่อมต่อและการแจ้งเตือน
+  var CFG_OPTIONS = { notify_mode: [['moph_first', 'MOPH Alert ก่อน (ประหยัดโควต้า LINE) — ส่งไม่ได้จึงใช้ LINE'], ['line_first', 'LINE ก่อน — ส่งไม่ได้จึงใช้ MOPH Alert'], ['moph_only', 'MOPH Alert อย่างเดียว'], ['line_only', 'LINE อย่างเดียว']] };
+  function stConn() {
+    var c = ST.conn, pct = c.line_limit ? Math.min(100, Math.round(c.line_used * 100 / c.line_limit)) : 100;
+    return '<h2>วิธีส่งแจ้งเตือนถึงผู้ใช้</h2><div class="card">' +
+      '<label class="f">ลำดับช่องทาง</label><select id="cn_mode">' + CFG_OPTIONS.notify_mode.map(function (o) { return '<option value="' + o[0] + '"' + (c.notify_mode === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select>' +
+      '<div class="grid2"><div><label class="f">เพดานข้อความ LINE ต่อเดือน (ฟรี 200 — แนะนำตั้งต่ำกว่า)</label><input type="number" id="cn_limit" value="' + esc(String(c.line_limit)) + '"></div>' +
+      '<div><label class="f">ใช้ไปเดือนนี้</label><div style="margin-top:10px"><b>' + c.line_used + '</b> / ' + c.line_limit + '</div><div class="bar-track"><div class="bar-fill" style="width:' + pct + '%;background:' + (pct >= 90 ? '#d9363e' : '#06c755') + '"></div></div></div></div>' +
+      '<div style="height:8px"></div><button class="btn small" data-act="cn-mode">บันทึก</button>' +
+      '<div class="muted" style="margin-top:6px">ถึงเพดานแล้วระบบจะไม่ส่ง LINE (ใช้ MOPH Alert แทนถ้ามีเลขบัตร) · ผู้ใช้ที่ยังไม่มีเลขบัตรจะรับทาง LINE เท่านั้น</div></div>' +
+      '<h2>ตัวตั้งเวลา</h2><div class="card">' + (c.triggers_on ? '<span class="badge" style="background:#3fae5a">เปิดอยู่</span> ส่งแจ้งเตือนจากคิวทุก 1 นาที · สรุปงานค้างทุกวัน 08:00' : '<span class="badge" style="background:#d9363e">ยังไม่ติดตั้ง</span> ตอนนี้ระบบส่งแจ้งเตือนทันทีระหว่างผู้ใช้รอ (ช้ากว่า)') +
+      '<div class="muted">คิวรอส่ง ' + c.queue_pending + ' · ส่งไม่สำเร็จ ' + c.queue_failed + '</div><div style="height:8px"></div><button class="btn small" data-act="cn-triggers">' + (c.triggers_on ? 'ติดตั้งใหม่' : 'ติดตั้งตัวตั้งเวลา') + '</button></div>' +
+      '<h2>ค่าการเชื่อมต่อ</h2>' + (c.liff_channel_set ? '' : '<div class="notice err">ยังไม่ได้ตั้ง LIFF_CHANNEL_ID ใน Script Properties (จำเป็นสำหรับตรวจการล็อกอิน)</div>') +
+      '<div style="overflow:auto"><table class="t"><tbody>' + c.settings.map(function (s, i) {
+        var big = s.key === 'MOPH_ALERT_BODY';
+        return '<tr><td style="width:36%">' + esc(s.label) + '<br><span class="muted">' + esc(s.key) + (s.set ? ' · ตั้งแล้ว' + (s.hint ? ' (' + esc(s.hint) + ')' : '') : ' · ยังไม่ตั้ง') + '</span></td><td>' +
+          (big ? '<textarea id="cs_' + i + '" style="min-height:70px" placeholder="' + esc(c.default_moph_body) + '">' + esc(s.value) + '</textarea>'
+            : '<input type="' + (s.secret ? 'password' : 'text') + '" autocomplete="off" id="cs_' + i + '" placeholder="' + (s.secret && s.set ? 'เว้นว่างไว้ = ไม่เปลี่ยน' : '') + '" value="' + esc(s.value) + '">') +
+          '</td><td style="white-space:nowrap"><button class="btn small" data-act="cs-save" data-arg="' + i + '">บันทึก</button>' + (s.set ? ' <button class="btn small secondary" data-act="cs-clear" data-arg="' + i + '">ล้าง</button>' : '') + '</td></tr>';
+      }).join('') + '</tbody></table></div>' +
+      '<h2>ทดสอบส่ง</h2><div class="card"><div class="row">' +
+      '<button class="btn small secondary" data-act="cn-test" data-arg="telegram">Telegram กลุ่ม</button>' +
+      '<button class="btn small secondary" data-act="cn-test" data-arg="moph_user">MOPH Alert (ถึงตัวคุณ)</button>' +
+      '<button class="btn small secondary" data-act="cn-test" data-arg="moph_group">MOPH Notify กลุ่ม</button>' +
+      '<button class="btn small secondary" data-act="cn-test" data-arg="line">LINE (ถึงตัวคุณ · นับโควต้า 1)</button></div>' +
+      '<pre id="cn_result" class="muted" style="white-space:pre-wrap;margin:10px 0 0"></pre>' +
+      '<div class="muted">MOPH Alert ส่งถึงบุคคลตามเลขบัตร: หากทดสอบแล้วไม่สำเร็จ ให้ตรวจ URL และรูปแบบ body ตามคู่มือ MOPH Alert ของหน่วยบริการ แล้วแก้ที่ตารางด้านบน</div></div>';
+  }
+  H['cn-mode'] = function (_, el) {
+    guard(el, async function () {
+      await R.api('saveConfig', { key: 'notify_mode', value: gv('cn_mode') });
+      await R.api('saveConfig', { key: 'line_monthly_limit', value: gv('cn_limit') });
+      R.toast('บันทึกแล้ว'); reloadSetup();
+    });
+  };
+  H['cn-triggers'] = function (_, el) {
+    guard(el, async function () { var r = await R.api('setupTriggers', {}); R.toast(r.message); reloadSetup(); });
+  };
+  H['cs-save'] = function (i, el) {
+    var s = ST.conn.settings[Number(i)];
+    guard(el, async function () {
+      var v = gv('cs_' + i);
+      if (s.secret && !v) { R.toast('ไม่ได้กรอกค่าใหม่ (ค่าเดิมไม่เปลี่ยน)'); return; }
+      await R.api('saveSetting', { key: s.key, value: v }); R.toast('บันทึกแล้ว'); reloadSetup();
+    });
+  };
+  H['cs-clear'] = function (i, el) {
+    var s = ST.conn.settings[Number(i)];
+    if (!confirm('ล้างค่า ' + s.key + ' ?')) return;
+    guard(el, async function () { await R.api('saveSetting', { key: s.key, value: '' }); R.toast('ล้างแล้ว'); reloadSetup(); });
+  };
+  H['cn-test'] = function (ch, el) {
+    guard(el, async function () {
+      var out = document.getElementById('cn_result'); out.textContent = 'กำลังทดสอบ…';
+      try { var r = await R.api('testNotify', { channel: ch }); out.textContent = (r.ok ? '✅ สำเร็จ: ' : '❌ ไม่สำเร็จ: ') + r.result; }
+      catch (e) { out.textContent = '❌ ' + e.message; }
+      if (ch === 'line') ST.conn = null;
+    });
+  };
 
   function grpSel(id, val) {
     return '<select id="' + id + '">' + R.UNIT_GROUPS.map(function (g) { return '<option' + (g === val ? ' selected' : '') + '>' + esc(g) + '</option>'; }).join('') + '</select>';
@@ -270,10 +331,10 @@
 
   var CFG_LABEL = { hospital_id: 'รหัส รพ. (ใช้ในเลขที่รายงาน)', hospital_name: 'ชื่อ รพ.', office_start: 'เริ่มเวลาราชการ (HH:MM)', office_end: 'สิ้นสุดเวลาราชการ',
     shift_morning_start: 'เริ่มเวรเช้า', shift_afternoon_start: 'เริ่มเวรบ่าย', shift_night_start: 'เริ่มเวรดึก',
-    kpi_near_miss: 'เป้า Near miss (%)', kpi_units_report: 'เป้าหน่วยที่รายงาน (%)', kpi_units_register: 'เป้าหน่วยที่มี Risk Register (%)', kpi_rca: 'เป้าทำ RCA (%)', kpi_repeat: 'เพดานเหตุรุนแรงซ้ำ (%)', kpi_unit_group: 'กลุ่มหน่วยที่ใช้คำนวณตัวชี้วัดข้อ 3-4 (เว้นว่าง = ทุกกลุ่ม)' };
+    kpi_near_miss: 'เป้า Near miss (%)', kpi_units_report: 'เป้าหน่วยที่รายงาน (%)', kpi_units_register: 'เป้าหน่วยที่มี Risk Register (%)', kpi_rca: 'เป้าทำ RCA (%)', kpi_repeat: 'เพดานเหตุรุนแรงซ้ำ (%)', kpi_unit_group: 'กลุ่มหน่วยที่ใช้คำนวณตัวชี้วัดข้อ 3-4 (เว้นว่าง = ทุกกลุ่ม)', notify_mode: 'ลำดับช่องทางแจ้งเตือนผู้ใช้', line_monthly_limit: 'เพดานข้อความ LINE ต่อเดือน' };
   function stConfig() {
     return '<div class="notice">เปลี่ยนรหัส รพ. จะมีผลกับเลขที่รายงานใหม่เท่านั้น</div><div style="overflow:auto"><table class="t"><tbody>' + ST.data.config.map(function (c, i) {
-      return '<tr><td>' + esc(CFG_LABEL[c.key] || c.key) + '<br><span class="muted">' + esc(c.key) + '</span></td><td><input type="text" id="cf_' + i + '" value="' + esc(c.value) + '"></td>' +
+      return '<tr><td>' + esc(CFG_LABEL[c.key] || c.key) + '<br><span class="muted">' + esc(c.key) + '</span></td><td>' + (CFG_OPTIONS[c.key] ? '<select id="cf_' + i + '">' + CFG_OPTIONS[c.key].map(function (o) { return '<option value="' + o[0] + '"' + (c.value === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select>' : '<input type="text" id="cf_' + i + '" value="' + esc(c.value) + '">') + '</td>' +
         '<td><button class="btn small" data-act="cf-save" data-arg="' + i + '">บันทึก</button></td></tr>';
     }).join('') + '</tbody></table></div>';
   }
@@ -298,8 +359,7 @@
     return '<div class="filters">' +
       '<div><label class="f">ตั้งแต่</label><input type="date" id="fFrom" value="' + esc(F.from) + '"></div>' +
       '<div><label class="f">ถึง</label><input type="date" id="fTo" value="' + esc(F.to) + '"></div>' +
-      '<div><label class="f">หน่วยงาน</label><select id="fUnit"><option value="">ทั้งหมด</option>' +
-      R.unitOptions(S.conf.units, F.unit_id) + '</select></div>' +
+      '<div style="grid-column:span 2"><label class="f">กลุ่มงาน / หน่วยงาน</label>' + R.unitSelect2('fUnit', S.conf.units, F.unit_id, 'ทั้งหมด') + '</div>' +
       '<div><label class="f">สถานะ</label><select id="fStatus"><option value="">ทั้งหมด</option>' +
       STATUSES.map(function (s) { return '<option' + (F.status === s ? ' selected' : '') + '>' + esc(s) + '</option>'; }).join('') + '</select></div>' +
       '<div><label class="f">ความรุนแรง</label><select id="fGroup"><option value="">ทั้งหมด</option>' +
@@ -370,7 +430,7 @@
         html += '<button class="btn small" data-act="confirm" data-arg="' + esc(inc.id) + '">ยืนยันเป็นอุบัติการณ์</button>' +
           '<button class="btn small danger" data-act="reject" data-arg="' + esc(inc.id) + '">ไม่ใช่ความเสี่ยง</button>';
       }
-      html += '</div>' + R.workHtml(inc) + '</div></div>';
+      html += '</div>' + R.workHtml(inc, unitName) + '</div></div>';
       document.getElementById('modal').innerHTML = html;
     } catch (e) { R.toast(e.message, true); }
   };
@@ -405,7 +465,7 @@
       var d = await R.api('listUsers', {});
       var pending = d.users.filter(function (u) { return u.status === 'pending'; }).length;
       $app.innerHTML = '<h1>ผู้ใช้</h1>' + (pending ? '<div class="notice">มี ' + pending + ' คนรออนุมัติ</div>' : '') +
-        '<div style="overflow:auto"><table class="t"><thead><tr><th>ชื่อ</th><th>ตำแหน่ง</th><th>สถานะ</th><th>บทบาท</th><th>หน่วยงาน</th><th>OA</th><th></th></tr></thead><tbody>' +
+        '<div style="overflow:auto"><table class="t"><thead><tr><th>ชื่อ</th><th>ตำแหน่ง</th><th>เลขบัตร</th><th>สถานะ</th><th>บทบาท</th><th>หน่วยงาน</th><th>OA</th><th></th></tr></thead><tbody>' +
         d.users.map(function (u) { return userRow(u, d.units); }).join('') + '</tbody></table></div>';
     } catch (e) { R.toast(e.message, true); }
   }
@@ -426,12 +486,18 @@
       '<button class="btn small secondary" data-act="user-save" data-arg="' + esc(u.id) + '">บันทึก</button> ' +
       (u.status === 'active' ? '<button class="btn small danger" data-act="user-disable" data-arg="' + esc(u.id) + '">ปิด</button>' :
         '<button class="btn small" data-act="user-enable" data-arg="' + esc(u.id) + '">เปิด</button>');
-    return '<tr><td><b>' + esc(u.name) + '</b><br><span class="muted">' + esc(u.display_name) + '</span></td><td>' + esc(u.position) + '</td><td>' + esc(u.status) +
+    return '<tr><td><b>' + esc(u.name) + '</b><br><span class="muted">' + esc(u.display_name) + '</span></td><td>' + esc(u.position) + '</td><td>' + (u.cid_masked ? esc(u.cid_masked) : '<span style="color:#d9363e">ไม่มี</span>') + '<br><input type="text" inputmode="numeric" maxlength="17" id="cid_' + esc(u.id) + '" placeholder="ใส่เพื่อแก้" style="width:130px;padding:6px;font-size:12px"></td><td>' + esc(u.status) +
       '</td><td>' + roleSel + '</td><td>' + unitBoxes + '</td><td>' + (u.friend === '1' ? 'เพื่อน' : u.friend === '0' ? 'ยังไม่เป็นเพื่อน' : '-') + '</td><td>' + actions + '</td></tr>';
   }
   function collect(id) {
     var units = Array.prototype.map.call(document.querySelectorAll('input.u_' + CSS.escape(id) + ':checked'), function (c) { return c.value; });
-    return { user_id: id, role: document.getElementById('r_' + id).value, unit_ids: units };
+    var out = { user_id: id, role: document.getElementById('r_' + id).value, unit_ids: units };
+    var cidEl = document.getElementById('cid_' + id);
+    if (cidEl && cidEl.value.trim()) {
+      if (!R.cidOk(cidEl.value)) throw new Error('เลขบัตรประชาชนไม่ถูกต้อง');
+      out.cid = cidEl.value.replace(/\D/g, '');
+    }
+    return out;
   }
   function review(action) {
     return function (id, el) {
