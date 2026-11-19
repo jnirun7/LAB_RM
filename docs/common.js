@@ -269,7 +269,9 @@ window.RM = (function () {
         '<label class="f">ผลที่ได้ (ถ้ามี)</label>' + ta('wk_result', 'ผลหลังดำเนินการ', '', 48) +
         '<label class="f">ประสานกับ/ผู้รับเรื่อง (ไม่บังคับ)</label><input type="text" id="wk_contact" placeholder="เช่น ตึกศัลยกรรม: พยาบาลสมศรี รับเรื่อง 14:10">' +
         '<label style="display:block;margin:10px 0"><input type="checkbox" id="wk_sys"> เป็นการปรับปรุงระบบ/ขั้นตอน</label>' +
-        '<button class="btn" data-act="w-add" data-arg="' + esc(inc.id) + '">เพิ่มรายการแก้ไข</button></div>' +
+        '<button class="btn secondary" data-act="w-add" data-arg="' + esc(inc.id) + '">เพิ่มรายการแก้ไข (ยังไม่ปิด)</button>' +
+        '<div style="height:8px"></div><button class="btn warn" data-act="w-quick" data-arg="' + esc(inc.id) + '">แก้ไขเสร็จ + ขอปิดเคสเลย</button>' +
+        (inc.can_final_close ? '<div style="height:8px"></div><button class="btn" data-act="w-quickclose" data-arg="' + esc(inc.id) + '">แก้ไขเสร็จ + ปิดเคสทันที</button>' : '') + '</div>' +
         contactsCard(inc, unitName) +
         '<details class="card"' + (inc.rca_required && !inc.rca ? ' open' : '') + '><summary><b>RCA (วิเคราะห์สาเหตุ)</b>' +
         (inc.rca_required ? ' <span class="badge" style="background:#d9363e">จำเป็นก่อนปิดเคส</span>' : '') + '</summary>' +
@@ -322,6 +324,15 @@ window.RM = (function () {
       return { action: 'addAction', payload: { incident_id: id, level: val('wk_level'), summary: val('wk_summary'), result: val('wk_result'),
         improved_system: !!(document.getElementById('wk_sys') || {}).checked, contact: val('wk_contact') } };
     }, 'บันทึกการแก้ไขแล้ว');
+    function quick(close) {
+      return function (id) {
+        if (!confirm(close ? 'บันทึกการแก้ไขและปิดเคสทันที?' : 'บันทึกการแก้ไขและส่งให้กรรมการพิจารณาปิดเคส?')) return null;
+        return { action: 'quickFix', payload: { incident_id: id, close: close, level: val('wk_level'), summary: val('wk_summary'), result: val('wk_result'),
+          improved_system: !!(document.getElementById('wk_sys') || {}).checked, contact: val('wk_contact') }, done: 'list' };
+      };
+    }
+    run('w-quick', quick(false), 'ส่งขอปิดเคสแล้ว');
+    run('w-quickclose', quick(true), 'ปิดเคสแล้ว');
     run('w-contacts', function (id) {
       var m = {};
       Array.prototype.forEach.call(document.querySelectorAll('.wk_c'), function (i) { if (i.value.trim()) m[i.dataset.unit] = i.value.trim(); });
