@@ -194,6 +194,16 @@
       '<div><label class="f">ใช้ไปเดือนนี้</label><div style="margin-top:10px"><b>' + c.line_used + '</b> / ' + c.line_limit + '</div><div class="bar-track"><div class="bar-fill" style="width:' + pct + '%;background:' + (pct >= 90 ? '#d9363e' : '#06c755') + '"></div></div></div></div>' +
       '<div style="height:8px"></div><button class="btn small" data-act="cn-mode">บันทึก</button>' +
       '<div class="muted" style="margin-top:6px">ถึงเพดานแล้วระบบจะไม่ส่ง LINE (ใช้ MOPH Alert แทนถ้ามีเลขบัตร) · ผู้ใช้ที่ยังไม่มีเลขบัตรจะรับทาง LINE เท่านั้น</div></div>' +
+      '<h2>เลือกเหตุการณ์ที่ให้แจ้งเตือน</h2><div class="card"><div class="muted" style="margin-bottom:8px">ติ๊กผู้รับของแต่ละเหตุการณ์ — ไม่ติ๊กเลย = ปิดการแจ้งเตือนเหตุการณ์นั้น · <b>ผู้ใช้</b> และ <b>Admin</b> ส่งรายบุคคลทาง MOPH Alert/LINE (กินโควต้า) · <b>กลุ่ม</b> ส่งเข้า Telegram / MOPH Notify กลุ่ม (ไม่กินโควต้า LINE)</div>' +
+      '<div style="overflow:auto"><table class="t"><thead><tr><th>เหตุการณ์</th><th>ผู้ใช้</th><th>Admin</th><th>กลุ่ม</th></tr></thead><tbody>' + c.events.map(function (e, i) {
+        return '<tr><td>' + esc(e.label) + '<br><span class="muted">' + esc(e.who) + '</span></td>' +
+          ['u', 'a', 'g'].map(function (ch) { return '<td style="text-align:center"><input type="checkbox" class="ev_' + ch + '" data-i="' + i + '"' + (e.value.indexOf(ch) >= 0 ? ' checked' : '') + '></td>'; }).join('') + '</tr>';
+      }).join('') + '</tbody></table></div><div style="height:8px"></div>' +
+      '<div class="row"><button class="btn small" data-act="ev-save">บันทึก</button>' +
+      '<button class="btn small secondary" data-act="ev-preset" data-arg="save">ชุดประหยัดโควต้า (แนะนำ)</button>' +
+      '<button class="btn small secondary" data-act="ev-preset" data-arg="all">เปิดครบทุกเหตุการณ์</button>' +
+      '<button class="btn small secondary" data-act="ev-preset" data-arg="off">ปิดทั้งหมด</button></div>' +
+      '<div class="muted" style="margin-top:6px">ชุดแนะนำ: แจ้งเฉพาะ “รายงานใหม่” และ “ขอปิดเคส/ปิดเคส” ส่วนเปลี่ยนสถานะระหว่างทางไม่แจ้ง · Sentinel event แจ้งทุกช่องทางเสมอ · ผู้ใช้ยังเห็นสถานะล่าสุดได้ในหน้า “งานของฉัน”</div></div>' +
       '<h2>ตัวตั้งเวลา</h2><div class="card">' + (c.triggers_on ? '<span class="badge" style="background:#3fae5a">เปิดอยู่</span> ส่งแจ้งเตือนจากคิวทุก 1 นาที · สรุปงานค้างทุกวัน 08:00' : '<span class="badge" style="background:#d9363e">ยังไม่ติดตั้ง</span> ตอนนี้ระบบส่งแจ้งเตือนทันทีระหว่างผู้ใช้รอ (ช้ากว่า)') +
       '<div class="muted">คิวรอส่ง ' + c.queue_pending + ' · ส่งไม่สำเร็จ ' + c.queue_failed + '</div><div style="height:8px"></div><button class="btn small" data-act="cn-triggers">' + (c.triggers_on ? 'ติดตั้งใหม่' : 'ติดตั้งตัวตั้งเวลา') + '</button></div>' +
       '<h2>ค่าการเชื่อมต่อ</h2>' + (c.liff_channel_set ? '' : '<div class="notice err">ยังไม่ได้ตั้ง LIFF_CHANNEL_ID ใน Script Properties (จำเป็นสำหรับตรวจการล็อกอิน)</div>') +
@@ -216,6 +226,31 @@
     guard(el, async function () {
       await R.api('saveConfig', { key: 'notify_mode', value: gv('cn_mode') });
       await R.api('saveConfig', { key: 'line_monthly_limit', value: gv('cn_limit') });
+      R.toast('บันทึกแล้ว'); reloadSetup();
+    });
+  };
+  function evSet(fn) {
+    var boxes = document.querySelectorAll('.ev_u,.ev_a,.ev_g');
+    for (var i = 0; i < boxes.length; i++) {
+      var b = boxes[i], idx = Number(b.getAttribute('data-i')), ch = b.className.replace('ev_', '');
+      b.checked = fn(ST.conn.events[idx], ch);
+    }
+  }
+  H['ev-preset'] = function (kind) {
+    evSet(function (e, ch) {
+      if (kind === 'off') return false;
+      if (kind === 'all') return true;
+      return e.def.indexOf(ch) >= 0; // ชุดประหยัด = ค่าเริ่มต้นของระบบ
+    });
+    R.toast('เลือกชุดแล้ว — กด “บันทึก” เพื่อใช้งาน');
+  };
+  H['ev-save'] = function (_, el) {
+    guard(el, async function () {
+      for (var i = 0; i < ST.conn.events.length; i++) {
+        var v = '';
+        ['u', 'a', 'g'].forEach(function (ch) { var b = document.querySelector('.ev_' + ch + '[data-i="' + i + '"]'); if (b && b.checked) v += ch; });
+        if (v !== ST.conn.events[i].value) await R.api('saveConfig', { key: 'ntf_' + ST.conn.events[i].key, value: v });
+      }
       R.toast('บันทึกแล้ว'); reloadSetup();
     });
   };
